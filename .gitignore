@@ -1,0 +1,26 @@
+# IDE
+/.idea/
+.vscode/
+*.swp
+*.swo
+
+# Docker
+*.log
+.env
+.env.local
+
+# Backup files
+*.tar.gz
+*.sql
+*.dump
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+test-data/
+temp/
+
+# rclone config (should never be committed)
+rclone.conf
