@@ -55,7 +55,9 @@ RUN curl -O https://downloads.rclone.org/rclone-current-linux-amd64.zip \
 RUN mkdir -p /etc/pgbackrest /var/log/pgbackrest /var/lib/pgbackrest \
     /backup/scripts /backup/logs /backup/local/base /backup/local/wal \
     /var/lib/postgresql/data ~/.config/rclone \
+    /var/spool/cron/crontabs \
     && chmod 750 /etc/pgbackrest /var/log/pgbackrest /var/lib/pgbackrest \
+    && chmod 755 /var/spool/cron/crontabs \
     && chown -R postgres:postgres /backup /var/log/pgbackrest /var/lib/pgbackrest /etc/pgbackrest \
     && pgbackrest version
 

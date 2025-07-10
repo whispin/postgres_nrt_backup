@@ -43,21 +43,28 @@ PGBACKREST_CONFIG=/etc/pgbackrest/pgbackrest.conf
 ${cron_entry}
 EOF
     
-    # Install crontab for postgres user
-    if ! su - postgres -c "crontab '$temp_crontab'"; then
+    # Create crontab directory for postgres user if it doesn't exist
+    mkdir -p /var/spool/cron/crontabs
+
+    # Install crontab directly to the crontabs directory
+    if ! cp "$temp_crontab" "/var/spool/cron/crontabs/postgres"; then
         log "ERROR" "Failed to install crontab for postgres user"
         rm -f "$temp_crontab"
         return 1
     fi
-    
+
+    # Set proper permissions for crontab file
+    chown postgres:postgres "/var/spool/cron/crontabs/postgres"
+    chmod 600 "/var/spool/cron/crontabs/postgres"
+
     # Clean up temporary file
     rm -f "$temp_crontab"
-    
+
     log "INFO" "Crontab installed successfully for postgres user"
-    
+
     # Verify crontab installation
     log "INFO" "Verifying crontab installation..."
-    if su - postgres -c "crontab -l" | grep -q "/backup/scripts/backup.sh"; then
+    if [ -f "/var/spool/cron/crontabs/postgres" ] && grep -q "/backup/scripts/backup.sh" "/var/spool/cron/crontabs/postgres"; then
         log "INFO" "Crontab verification successful"
     else
         log "ERROR" "Crontab verification failed"
