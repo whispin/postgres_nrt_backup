@@ -357,10 +357,13 @@ EOF
 
     # Create the stanza using su-exec instead of su
     log "INFO" "Creating pgbackrest stanza..."
-    if ! su-exec postgres pgbackrest --stanza="${stanza_name}" stanza-create; then
+    if ! su-exec postgres bash -c "export PGBACKREST_STANZA=\"${stanza_name}\" && pgbackrest stanza-create"; then
         log "ERROR" "Failed to create pgbackrest stanza"
         log "ERROR" "Checking pgbackrest configuration..."
-        su-exec postgres pgbackrest --stanza="${stanza_name}" check || true
+        su-exec postgres bash -c "export PGBACKREST_STANZA=\"${stanza_name}\" && pgbackrest check" || true
+        # Try with command line parameter as fallback
+        log "INFO" "Trying with command line parameter as fallback..."
+        su-exec postgres pgbackrest --stanza="${stanza_name}" stanza-create || true
         return 1
     fi
 
@@ -383,10 +386,10 @@ perform_pgbackrest_backup() {
 
     # Perform the backup using su-exec
     local backup_output
-    if ! backup_output=$(su-exec postgres pgbackrest --stanza="${stanza_name}" --type="${backup_type}" backup 2>&1); then
+    if ! backup_output=$(su-exec postgres bash -c "export PGBACKREST_STANZA=\"${stanza_name}\" && pgbackrest --type=\"${backup_type}\" backup" 2>&1); then
         log "ERROR" "Pgbackrest backup failed: $backup_output"
         log "ERROR" "Checking stanza status..."
-        su-exec postgres pgbackrest --stanza="${stanza_name}" info || true
+        su-exec postgres bash -c "export PGBACKREST_STANZA=\"${stanza_name}\" && pgbackrest info" || true
         return 1
     fi
 
@@ -395,7 +398,7 @@ perform_pgbackrest_backup() {
 
     # Get the latest backup info
     local backup_info
-    if ! backup_info=$(su-exec postgres pgbackrest --stanza="${stanza_name}" info --output=json 2>/dev/null); then
+    if ! backup_info=$(su-exec postgres bash -c "export PGBACKREST_STANZA=\"${stanza_name}\" && pgbackrest info --output=json" 2>/dev/null); then
         log "WARN" "Could not retrieve backup info"
         return 0
     fi
@@ -669,9 +672,9 @@ check_full_backup_exists() {
     log "INFO" "Checking for existing full backup..."
 
     # Check if stanza exists and has backups
-    if su-exec postgres pgbackrest --stanza="$stanza_name" info >/dev/null 2>&1; then
+    if su-exec postgres bash -c "export PGBACKREST_STANZA=\"$stanza_name\" && pgbackrest info" >/dev/null 2>&1; then
         # Get backup info and check for full backups
-        local backup_info=$(su-exec postgres pgbackrest --stanza="$stanza_name" info --output=json 2>/dev/null)
+        local backup_info=$(su-exec postgres bash -c "export PGBACKREST_STANZA=\"$stanza_name\" && pgbackrest info --output=json" 2>/dev/null)
 
         if [ -n "$backup_info" ]; then
             # Check if there are any full backups
