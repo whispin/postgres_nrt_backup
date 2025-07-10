@@ -126,12 +126,6 @@ should_run_incremental_backup() {
 perform_scheduled_incremental_backup() {
     incremental_log "INFO" "Starting scheduled incremental backup..."
     
-    # Setup rclone if needed
-    if ! setup_rclone; then
-        incremental_log "ERROR" "Failed to setup rclone for incremental backup"
-        return 1
-    fi
-    
     # Perform incremental backup (this will auto-create full backup if needed)
     if perform_incremental_backup; then
         incremental_log "INFO" "Scheduled incremental backup completed successfully"
@@ -196,6 +190,12 @@ main() {
     mkdir -p "$(dirname "$INCREMENTAL_LOG_FILE")"
     
     incremental_log "INFO" "=== Starting Scheduled Incremental Backup ==="
+    
+    # Initialize environment first
+    if ! initialize_environment; then
+        incremental_log "ERROR" "Failed to initialize environment"
+        exit 1
+    fi
     
     # Check if backup should run
     if ! should_run_incremental_backup; then

@@ -264,6 +264,12 @@ trap cleanup EXIT
 
 # Main function
 main() {
+    # Initialize environment first
+    if ! initialize_environment; then
+        wal_log "ERROR" "Failed to initialize environment"
+        exit 1
+    fi
+    
     # Ensure required tools are available
     if ! command -v bc >/dev/null 2>&1; then
         wal_log "ERROR" "bc command not found. Please install bc package."

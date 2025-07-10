@@ -23,17 +23,10 @@ initialize_backup_system() {
     done > /etc/environment
     log "INFO" "Environment variables exported to /etc/environment"
 
-    # Check environment variables
-    log "INFO" "Checking environment variables..."
-    if ! check_env; then
-        log "ERROR" "Environment check failed"
-        return 1
-    fi
-
-    # Setup rclone
-    log "INFO" "Setting up rclone..."
-    if ! setup_rclone; then
-        log "ERROR" "Rclone setup failed"
+    # Initialize environment using the unified function
+    log "INFO" "Initializing environment..."
+    if ! initialize_environment; then
+        log "ERROR" "Environment initialization failed"
         return 1
     fi
 

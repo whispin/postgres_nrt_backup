@@ -84,12 +84,6 @@ fi
 check_backup_config() {
     log "INFO" "=== Checking Backup Configuration ==="
     
-    # Check environment variables
-    if ! check_env; then
-        log "ERROR" "Environment check failed"
-        return 1
-    fi
-    
     # Check PostgreSQL connection
     if ! wait_for_postgres 30; then
         log "ERROR" "PostgreSQL is not available"
@@ -97,7 +91,7 @@ check_backup_config() {
     fi
     
     # Check pgBackRest configuration
-    local stanza=$(get_stanza_name)
+    local stanza="${PGBACKREST_STANZA:-main}"
     log "INFO" "Using stanza: $stanza"
     
     # Check if stanza exists
@@ -128,7 +122,7 @@ check_backup_config() {
 list_backups() {
     log "INFO" "=== Available Backups ==="
     
-    local stanza=$(get_stanza_name)
+    local stanza="${PGBACKREST_STANZA:-main}"
     
     # List pgBackRest backups
     log "INFO" "pgBackRest backups:"
@@ -196,6 +190,12 @@ perform_manual_backup() {
 # Main function
 main() {
     log "INFO" "=== Manual Backup Script Started ==="
+    
+    # Initialize environment first
+    if ! initialize_environment; then
+        log "ERROR" "Failed to initialize environment"
+        exit 1
+    fi
     
     if [ "$CHECK_ONLY" = true ]; then
         check_backup_config

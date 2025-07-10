@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# Global variables for environment initialization
+ENVIRONMENT_INITIALIZED=false
+RCLONE_INITIALIZED=false
+
 # Source environment variables if available
 if [[ -f /etc/environment ]]; then
     # Safely source environment variables
@@ -11,6 +15,43 @@ fi
 # Global variable for the rclone remote name
 REMOTE_NAME=""
 RCLONE_CONFIG_PATH="/root/.config/rclone/rclone.conf"
+
+# Initialize environment - this function should be called at the start of any script
+initialize_environment() {
+    if [[ "$ENVIRONMENT_INITIALIZED" == "true" ]]; then
+        return 0
+    fi
+    
+    log "INFO" "Initializing environment..."
+    
+    # Source environment variables from /etc/environment if available
+    if [[ -f /etc/environment ]]; then
+        log "INFO" "Loading environment variables from /etc/environment"
+        set -a
+        source /etc/environment 2>/dev/null || true
+        set +a
+    fi
+    
+    # Check required environment variables
+    if ! check_env; then
+        log "ERROR" "Environment check failed"
+        return 1
+    fi
+    
+    # Initialize rclone if not already done
+    if [[ "$RCLONE_INITIALIZED" != "true" ]]; then
+        log "INFO" "Initializing rclone configuration..."
+        if ! setup_rclone; then
+            log "ERROR" "Failed to setup rclone"
+            return 1
+        fi
+        RCLONE_INITIALIZED=true
+    fi
+    
+    ENVIRONMENT_INITIALIZED=true
+    log "INFO" "Environment initialized successfully"
+    return 0
+}
 
 # Logging function
 log() {
@@ -25,6 +66,23 @@ log() {
 get_first_remote_name() {
     local config_file="$1"
     grep -m 1 "^\[.*\]" "$config_file" | sed 's/^\[\(.*\)\]/\1/'
+}
+
+# Ensure REMOTE_NAME is set (call this before any rclone operations)
+ensure_remote_name() {
+    # First ensure environment is initialized
+    if ! initialize_environment; then
+        log "ERROR" "Failed to initialize environment"
+        return 1
+    fi
+    
+    if [[ -z "$REMOTE_NAME" ]]; then
+        log "ERROR" "REMOTE_NAME is not set after environment initialization"
+        log "ERROR" "Please ensure rclone is properly configured"
+        return 1
+    fi
+    
+    return 0
 }
 
 # Debug function to show environment variables
@@ -221,10 +279,9 @@ compress_and_upload() {
     local remote_filename="$3"
     local temp_compressed_file
 
-    # Check if REMOTE_NAME is set
-    if [[ -z "$REMOTE_NAME" ]]; then
-        log "ERROR" "REMOTE_NAME is not set. Cannot upload file."
-        log "ERROR" "Please ensure rclone is properly configured."
+    # Ensure REMOTE_NAME is set
+    if ! ensure_remote_name; then
+        log "ERROR" "Failed to determine rclone remote name. Cannot upload file."
         return 1
     fi
 
@@ -273,6 +330,12 @@ cleanup_old_backups() {
     local backup_type="$1"
     local retention_days="${BACKUP_RETENTION_DAYS:-3}"
     local cutoff_date=$(date -d "$retention_days days ago" +%Y%m%d)
+
+    # Ensure REMOTE_NAME is set
+    if ! ensure_remote_name; then
+        log "ERROR" "Failed to determine rclone remote name. Cannot cleanup old backups."
+        return 1
+    fi
 
     local db_identifier=$(get_database_identifier)
     local remote_base_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}"
@@ -640,6 +703,13 @@ perform_pgbackrest_backup() {
 # Upload pgBackRest repository to remote storage
 upload_pgbackrest_repository() {
     local backup_type="$1"
+    
+    # Ensure REMOTE_NAME is set
+    if ! ensure_remote_name; then
+        log "ERROR" "Failed to determine rclone remote name. Cannot upload repository."
+        return 1
+    fi
+    
     local db_identifier=$(get_database_identifier)
     local repo_remote_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}/repository"
 
@@ -729,6 +799,12 @@ create_backup_archive() {
 check_and_perform_daily_backup() {
     log "INFO" "Checking for today's full base backup..."
 
+    # Ensure REMOTE_NAME is set
+    if ! ensure_remote_name; then
+        log "ERROR" "Failed to determine rclone remote name. Cannot check for existing backups."
+        return 1
+    fi
+
     local today=$(date '+%Y%m%d')
     local db_identifier=$(get_database_identifier)
     local remote_base_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}/base"
@@ -744,6 +820,12 @@ check_and_perform_daily_backup() {
 
 # Perform complete backup process
 perform_full_backup() {
+    # Initialize environment first
+    if ! initialize_environment; then
+        log "ERROR" "Failed to initialize environment"
+        return 1
+    fi
+    
     log "INFO" "Starting complete backup process..."
 
     # Configure pgbackrest stanza if not already done
@@ -929,6 +1011,12 @@ check_full_backup_exists() {
 
 # Perform incremental backup
 perform_incremental_backup() {
+    # Initialize environment first
+    if ! initialize_environment; then
+        log "ERROR" "Failed to initialize environment"
+        return 1
+    fi
+    
     log "INFO" "Starting incremental backup process..."
 
     # Configure pgbackrest stanza if not already done
@@ -990,6 +1078,12 @@ perform_incremental_backup() {
 
 # Perform differential backup
 perform_differential_backup() {
+    # Initialize environment first
+    if ! initialize_environment; then
+        log "ERROR" "Failed to initialize environment"
+        return 1
+    fi
+    
     log "INFO" "Starting differential backup process..."
 
     # Configure pgbackrest stanza if not already done
