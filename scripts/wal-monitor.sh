@@ -146,18 +146,34 @@ check_backup_needed() {
 # Perform incremental backup and reset counters
 perform_wal_triggered_backup() {
     local current_lsn="$1"
-    
+
     wal_log "INFO" "WAL growth threshold reached. Starting incremental backup..."
-    
+
+    # Check if full backup exists first
+    if ! check_full_backup_exists; then
+        wal_log "WARN" "No full backup found. Performing full backup first..."
+        if perform_full_backup; then
+            wal_log "INFO" "Full backup completed successfully"
+            # Reset counters after full backup
+            LAST_BACKUP_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+            LAST_BACKUP_LSN="$current_lsn"
+            ACCUMULATED_WAL_GROWTH=0
+            return 0
+        else
+            wal_log "ERROR" "Failed to perform prerequisite full backup"
+            return 1
+        fi
+    fi
+
     # Perform incremental backup
     if perform_incremental_backup; then
         wal_log "INFO" "Incremental backup completed successfully"
-        
+
         # Reset counters
         LAST_BACKUP_TIME=$(date '+%Y-%m-%d %H:%M:%S')
         LAST_BACKUP_LSN="$current_lsn"
         ACCUMULATED_WAL_GROWTH=0
-        
+
         # Upload to remote storage if configured
         if [ -n "$REMOTE_NAME" ] && [ -f "$RCLONE_CONFIG_PATH" ]; then
             wal_log "INFO" "Uploading incremental backup to remote storage..."
@@ -167,7 +183,7 @@ perform_wal_triggered_backup() {
                 wal_log "ERROR" "Failed to upload incremental backup"
             fi
         fi
-        
+
         return 0
     else
         wal_log "ERROR" "Incremental backup failed"

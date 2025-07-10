@@ -468,18 +468,60 @@ wait_for_postgres() {
     return 0
 }
 
+# Check if full backup exists
+check_full_backup_exists() {
+    local stanza_name="${PGBACKREST_STANZA:-main}"
+
+    log "INFO" "Checking for existing full backup..."
+
+    # Check if stanza exists and has backups
+    if su-exec postgres pgbackrest --stanza="$stanza_name" info >/dev/null 2>&1; then
+        # Get backup info and check for full backups
+        local backup_info=$(su-exec postgres pgbackrest --stanza="$stanza_name" info --output=json 2>/dev/null)
+
+        if [ -n "$backup_info" ]; then
+            # Check if there are any full backups
+            local full_backup_count=$(echo "$backup_info" | jq -r '.[] | .backup[] | select(.type=="full") | .label' 2>/dev/null | wc -l)
+
+            if [ "$full_backup_count" -gt 0 ]; then
+                log "INFO" "Found $full_backup_count full backup(s)"
+                return 0
+            else
+                log "INFO" "No full backups found"
+                return 1
+            fi
+        else
+            log "INFO" "No backup information available"
+            return 1
+        fi
+    else
+        log "INFO" "Stanza does not exist or has no backups"
+        return 1
+    fi
+}
+
 # Perform incremental backup
 perform_incremental_backup() {
     log "INFO" "Starting incremental backup process..."
 
     # Configure pgbackrest stanza if not already done
     local stanza_name="${PGBACKREST_STANZA:-main}"
-    if ! su - postgres -c "pgbackrest --stanza=${stanza_name} info" > /dev/null 2>&1; then
+    if ! su-exec postgres pgbackrest --stanza="$stanza_name" info > /dev/null 2>&1; then
         log "INFO" "Stanza not found, creating stanza..."
         if ! create_pgbackrest_stanza; then
             log "ERROR" "Failed to create pgbackrest stanza"
             return 1
         fi
+    fi
+
+    # Check if full backup exists
+    if ! check_full_backup_exists; then
+        log "WARN" "No full backup found. Performing full backup first..."
+        if ! perform_full_backup; then
+            log "ERROR" "Failed to perform prerequisite full backup"
+            return 1
+        fi
+        log "INFO" "Full backup completed. Now proceeding with incremental backup..."
     fi
 
     # Perform pgbackrest incremental backup
@@ -498,12 +540,22 @@ perform_differential_backup() {
 
     # Configure pgbackrest stanza if not already done
     local stanza_name="${PGBACKREST_STANZA:-main}"
-    if ! su - postgres -c "pgbackrest --stanza=${stanza_name} info" > /dev/null 2>&1; then
+    if ! su-exec postgres pgbackrest --stanza="$stanza_name" info > /dev/null 2>&1; then
         log "INFO" "Stanza not found, creating stanza..."
         if ! create_pgbackrest_stanza; then
             log "ERROR" "Failed to create pgbackrest stanza"
             return 1
         fi
+    fi
+
+    # Check if full backup exists
+    if ! check_full_backup_exists; then
+        log "WARN" "No full backup found. Performing full backup first..."
+        if ! perform_full_backup; then
+            log "ERROR" "Failed to perform prerequisite full backup"
+            return 1
+        fi
+        log "INFO" "Full backup completed. Now proceeding with differential backup..."
     fi
 
     # Perform pgbackrest differential backup
