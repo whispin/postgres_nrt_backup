@@ -11,6 +11,7 @@ RUN apk add --no-cache \
     coreutils \
     findutils \
     dcron \
+    su-exec \
     build-base \
     gcc \
     make \

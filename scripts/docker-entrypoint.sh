@@ -74,19 +74,45 @@ start_postgresql() {
             echo "host all all 0.0.0.0/0 md5"
         } > "$PGDATA/pg_hba.conf"
 
-        # Create user and database if specified
-        if [ -n "$POSTGRES_USER" ] && [ "$POSTGRES_USER" != "postgres" ]; then
-            log "INFO" "Creating user: $POSTGRES_USER"
-            su-exec postgres postgres --single -jE <<-EOSQL
-                CREATE USER "$POSTGRES_USER" WITH SUPERUSER PASSWORD '$POSTGRES_PASSWORD';
-EOSQL
-        fi
+        # Start PostgreSQL temporarily to create user and database
+        if [ -n "$POSTGRES_USER" ] && [ "$POSTGRES_USER" != "postgres" ] || [ -n "$POSTGRES_DB" ] && [ "$POSTGRES_DB" != "postgres" ]; then
+            log "INFO" "Starting PostgreSQL temporarily for user/database creation..."
+            su-exec postgres postgres &
+            TEMP_PG_PID=$!
 
-        if [ -n "$POSTGRES_DB" ] && [ "$POSTGRES_DB" != "postgres" ]; then
-            log "INFO" "Creating database: $POSTGRES_DB"
-            su-exec postgres postgres --single -jE <<-EOSQL
-                CREATE DATABASE "$POSTGRES_DB" OWNER "$POSTGRES_USER";
+            # Wait for PostgreSQL to start
+            local temp_wait=0
+            while ! su-exec postgres pg_isready -q; do
+                if [ $temp_wait -ge 30 ]; then
+                    log "ERROR" "Timeout waiting for temporary PostgreSQL startup"
+                    kill $TEMP_PG_PID 2>/dev/null || true
+                    return 1
+                fi
+                sleep 1
+                temp_wait=$((temp_wait + 1))
+            done
+
+            # Create user if specified
+            if [ -n "$POSTGRES_USER" ] && [ "$POSTGRES_USER" != "postgres" ]; then
+                log "INFO" "Creating user: $POSTGRES_USER"
+                su-exec postgres psql -v ON_ERROR_STOP=1 <<-EOSQL
+                    CREATE USER "$POSTGRES_USER" WITH SUPERUSER PASSWORD '$POSTGRES_PASSWORD';
 EOSQL
+            fi
+
+            # Create database if specified
+            if [ -n "$POSTGRES_DB" ] && [ "$POSTGRES_DB" != "postgres" ]; then
+                log "INFO" "Creating database: $POSTGRES_DB"
+                local db_owner="${POSTGRES_USER:-postgres}"
+                su-exec postgres psql -v ON_ERROR_STOP=1 <<-EOSQL
+                    CREATE DATABASE "$POSTGRES_DB" OWNER "$db_owner";
+EOSQL
+            fi
+
+            # Stop temporary PostgreSQL
+            log "INFO" "Stopping temporary PostgreSQL..."
+            kill $TEMP_PG_PID
+            wait $TEMP_PG_PID 2>/dev/null || true
         fi
     fi
 
