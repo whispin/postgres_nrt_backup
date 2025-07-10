@@ -10,7 +10,7 @@ fi
 
 # Global variable for the rclone remote name
 REMOTE_NAME=""
-RCLONE_CONFIG_PATH="~/.config/rclone/rclone.conf"
+RCLONE_CONFIG_PATH="/root/.config/rclone/rclone.conf"
 
 # Logging function
 log() {
@@ -181,9 +181,19 @@ setup_rclone() {
             log "INFO" "Using first rclone remote from config: '$REMOTE_NAME'"
         else
             log "ERROR" "No remote found in rclone configuration and RCLONE_REMOTE_NAME not specified."
+            log "ERROR" "Checking rclone config file contents..."
+            if [ -f "$RCLONE_CONFIG_PATH" ]; then
+                log "INFO" "Config file exists at: $RCLONE_CONFIG_PATH"
+                log "INFO" "Config file contents:"
+                cat "$RCLONE_CONFIG_PATH" | head -10
+            else
+                log "ERROR" "Config file not found at: $RCLONE_CONFIG_PATH"
+            fi
             return 1
         fi
     fi
+    
+    log "INFO" "Final REMOTE_NAME set to: '$REMOTE_NAME'"
     
     if [[ -z "$REMOTE_NAME" ]] || ! [[ "$REMOTE_NAME" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
         log "ERROR" "Invalid remote name: '$REMOTE_NAME'."
@@ -210,6 +220,13 @@ compress_and_upload() {
     local remote_path="$2"
     local remote_filename="$3"
     local temp_compressed_file
+
+    # Check if REMOTE_NAME is set
+    if [[ -z "$REMOTE_NAME" ]]; then
+        log "ERROR" "REMOTE_NAME is not set. Cannot upload file."
+        log "ERROR" "Please ensure rclone is properly configured."
+        return 1
+    fi
 
     if [[ ! -s "$source_file" ]]; then
         log "WARN" "Source file $source_file does not exist or is empty. Skipping upload."
