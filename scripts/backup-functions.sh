@@ -487,19 +487,80 @@ EOF
 
         if [ $((wait_time % 15)) -eq 0 ]; then
             log "INFO" "Still waiting for WAL archiving... (${wait_time}s/${max_wait}s)"
+            # Force another WAL switch to trigger archiving
+            if ! su-exec postgres psql -d "$pg_database" -c "SELECT pg_switch_wal();" 2>/dev/null; then
+                log "WARN" "Failed to force WAL switch"
+            fi
         fi
     done
 
     if [ "$archived_count" -eq 0 ]; then
-        log "WARN" "No archived WAL files found after ${max_wait} seconds"
-        log "WARN" "This may cause backup failures. Check PostgreSQL logs for archive errors."
+        log "ERROR" "No archived WAL files found after ${max_wait} seconds"
+        log "ERROR" "WAL archiving is not working properly. This will cause backup failures."
 
         # Show PostgreSQL log for debugging
         log "INFO" "Recent PostgreSQL log entries:"
         tail -20 "$pgdata/log/"*.log 2>/dev/null || log "WARN" "Could not read PostgreSQL logs"
+        
+        # Show current archive_command
+        local current_archive_cmd=$(su-exec postgres psql -d "$pg_database" -t -c "SHOW archive_command;" 2>/dev/null | sed 's/^[ \t]*//;s/[ \t]*$//')
+        log "ERROR" "Current archive_command: $current_archive_cmd"
+        
+        return 1
     fi
     
     return 0
+}
+
+# Verify WAL archiving is working before backup
+verify_wal_archiving() {
+    local stanza_name="${PGBACKREST_STANZA:-main}"
+    local pg_database="${POSTGRES_DB:-postgres}"
+    
+    log "INFO" "Verifying WAL archiving is working..."
+    
+    # Force a WAL switch and check if it gets archived
+    local pre_switch_lsn=$(su-exec postgres psql -d "$pg_database" -t -c "SELECT pg_current_wal_lsn();" 2>/dev/null | tr -d ' ')
+    
+    if [ -z "$pre_switch_lsn" ]; then
+        log "ERROR" "Failed to get current WAL LSN"
+        return 1
+    fi
+    
+    log "INFO" "Current WAL LSN before switch: $pre_switch_lsn"
+    
+    # Force WAL switch
+    if ! su-exec postgres psql -d "$pg_database" -c "SELECT pg_switch_wal();" 2>/dev/null; then
+        log "ERROR" "Failed to force WAL switch"
+        return 1
+    fi
+    
+    log "INFO" "WAL switch forced, waiting for archiving..."
+    
+    # Wait up to 60 seconds for the WAL file to be archived
+    local max_wait=60
+    local wait_time=0
+    local archive_dir="/var/lib/pgbackrest/archive/${stanza_name}"
+    
+    while [ $wait_time -lt $max_wait ]; do
+        if [ -d "$archive_dir" ]; then
+            local archived_count=$(find "$archive_dir" -type f \( -name "*.gz" -o -name "*.lz4" -o -name "*.xz" -o -name "*.bz2" -o -name "*-*" \) -newer "$archive_dir" 2>/dev/null | wc -l)
+            if [ "$archived_count" -gt 0 ]; then
+                log "INFO" "WAL archiving verified - found newly archived WAL files"
+                return 0
+            fi
+        fi
+        
+        sleep 2
+        wait_time=$((wait_time + 2))
+        
+        if [ $((wait_time % 10)) -eq 0 ]; then
+            log "INFO" "Still waiting for WAL archiving... (${wait_time}s/${max_wait}s)"
+        fi
+    done
+    
+    log "ERROR" "WAL archiving verification failed - no WAL files archived within ${max_wait} seconds"
+    return 1
 }
 
 # Perform full backup using pgbackrest
@@ -515,42 +576,16 @@ perform_pgbackrest_backup() {
         return 1
     fi
 
-    # For full backups, ensure we have some WAL files archived first
+    # For full backups, ensure WAL archiving is working
     if [ "$backup_type" = "full" ]; then
-        log "INFO" "Checking for archived WAL files before starting full backup..."
+        log "INFO" "Verifying WAL archiving before starting full backup..."
         
-        # Force a few WAL switches to ensure we have archived WAL files
-        for i in 1 2 3; do
-            log "INFO" "Forcing WAL switch $i/3..."
-            su-exec postgres psql -d "${POSTGRES_DB:-postgres}" -c "SELECT pg_switch_wal();" || true
-            sleep 2
-        done
-        
-        # Wait for archiving to complete
-        sleep 10
-        
-        # Check if we have archived WAL files
-        if [ -d "/var/lib/pgbackrest/archive/${stanza_name}" ]; then
-            archived_count=$(find "/var/lib/pgbackrest/archive/${stanza_name}" -type f | wc -l)
-            log "INFO" "Found ${archived_count} archived WAL files"
-            
-            if [ "$archived_count" -eq 0 ]; then
-                log "WARN" "No archived WAL files found. Backup may fail."
-                log "INFO" "Attempting to run archive-push manually..."
-                
-                # Try to manually archive any pending WAL files
-                wal_dir="${PGDATA:-/var/lib/postgresql/data}/pg_wal"
-                if [ -d "$wal_dir" ]; then
-                    for wal_file in "$wal_dir"/[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F]; do
-                        if [ -f "$wal_file" ]; then
-                            log "INFO" "Trying to archive WAL file: $(basename "$wal_file")"
-                            su-exec postgres pgbackrest --stanza="${stanza_name}" archive-push "$wal_file" || true
-                            break
-                        fi
-                    done
-                fi
-            fi
+        if ! verify_wal_archiving; then
+            log "ERROR" "WAL archiving verification failed - backup will likely fail"
+            return 1
         fi
+        
+        log "INFO" "WAL archiving verified successfully"
     fi
 
     # Perform the backup using su-exec
