@@ -66,6 +66,18 @@ start_postgresql() {
         echo "log_directory = 'log'" >> "$PGDATA/postgresql.conf"
         echo "log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'" >> "$PGDATA/postgresql.conf"
 
+        # Enable WAL archiving for pgBackRest (CRITICAL for backup functionality)
+        echo "wal_level = replica" >> "$PGDATA/postgresql.conf"
+        echo "archive_mode = on" >> "$PGDATA/postgresql.conf"
+        echo "archive_command = 'pgbackrest --stanza=${PGBACKREST_STANZA:-main} archive-push %p'" >> "$PGDATA/postgresql.conf"
+        echo "max_wal_senders = 3" >> "$PGDATA/postgresql.conf"
+        echo "wal_keep_size = 1GB" >> "$PGDATA/postgresql.conf"
+
+        # Additional settings for better backup performance
+        echo "checkpoint_completion_target = 0.9" >> "$PGDATA/postgresql.conf"
+        echo "wal_buffers = 16MB" >> "$PGDATA/postgresql.conf"
+        echo "checkpoint_timeout = 15min" >> "$PGDATA/postgresql.conf"
+
         # Set up pg_hba.conf for authentication
         {
             echo "local all all trust"
@@ -128,6 +140,30 @@ EOSQL
         # Kill the postgres process if it's still running
         kill $POSTGRES_PID 2>/dev/null || true
         return 1
+    fi
+
+    # If this is a fresh initialization, restart PostgreSQL to apply archive settings
+    if [ ! -f "$PGDATA/.archive_configured" ]; then
+        log "INFO" "Restarting PostgreSQL to apply archive configuration..."
+
+        # Stop current PostgreSQL instance
+        kill $POSTGRES_PID 2>/dev/null || true
+        wait $POSTGRES_PID 2>/dev/null || true
+
+        # Start PostgreSQL again
+        su-exec postgres postgres &
+        POSTGRES_PID=$!
+
+        # Wait for PostgreSQL to be ready again
+        if ! wait_for_postgres 120; then
+            log "ERROR" "PostgreSQL failed to restart with archive configuration"
+            kill $POSTGRES_PID 2>/dev/null || true
+            return 1
+        fi
+
+        # Mark archive as configured
+        touch "$PGDATA/.archive_configured"
+        log "INFO" "PostgreSQL restarted successfully with archive configuration"
     fi
 
     log "INFO" "PostgreSQL is ready"

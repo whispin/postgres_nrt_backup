@@ -334,6 +334,19 @@ configure_pgbackrest_stanza() {
         return 1
     fi
 
+    # Verify that archive_mode is enabled
+    log "INFO" "Verifying PostgreSQL archive mode configuration..."
+    local archive_mode_check
+    archive_mode_check=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -U "$pg_user" -d "$pg_database" -t -c "SHOW archive_mode;" 2>/dev/null | tr -d ' ')
+
+    if [ "$archive_mode_check" != "on" ]; then
+        log "ERROR" "Archive mode is not enabled (current: $archive_mode_check). This is required for pgBackRest."
+        log "ERROR" "Please ensure archive_mode=on is set in postgresql.conf and PostgreSQL has been restarted."
+        return 1
+    fi
+
+    log "INFO" "Archive mode is enabled: $archive_mode_check"
+
     # Create stanza configuration
     cat >> /etc/pgbackrest/pgbackrest.conf << EOF
 
