@@ -24,7 +24,7 @@
 # 拉取最新镜像
 docker pull ghcr.io/whispin/postgres_nrt_backup:latest
 
-# 运行备份容器
+# 方式1：使用RCLONE_CONF_BASE64环境变量
 docker run -d \
   --name postgres-backup \
   -e POSTGRES_USER=myuser \
@@ -36,12 +36,25 @@ docker run -d \
   -v /path/to/postgres/data:/var/lib/postgresql/data:ro \
   -v /path/to/backup:/backup/local \
   ghcr.io/whispin/postgres_nrt_backup:latest
+
+# 方式2：直接挂载rclone.conf文件
+docker run -d \
+  --name postgres-backup \
+  -e POSTGRES_USER=myuser \
+  -e POSTGRES_PASSWORD=mypass \
+  -e POSTGRES_DB=mydb \
+  -e PGBACKREST_STANZA=main \
+  -e WAL_GROWTH_THRESHOLD="100MB" \
+  -v /path/to/postgres/data:/var/lib/postgresql/data:ro \
+  -v /path/to/backup:/backup/local \
+  -v /path/to/rclone.conf:/root/.config/rclone/rclone.conf:ro \
+  ghcr.io/whispin/postgres_nrt_backup:latest
 ```
 
 ### 恢复模式
 
 ```bash
-# 恢复到最新备份
+# 方式1：使用RCLONE_CONF_BASE64环境变量恢复到最新备份
 docker run -d \
   --name postgres-recovery \
   -e POSTGRES_USER=myuser \
@@ -51,12 +64,15 @@ docker run -d \
   -e RECOVERY_MODE="true" \
   ghcr.io/whispin/postgres_nrt_backup:latest
 
-# 恢复到指定时间点
+# 方式2：挂载rclone.conf文件进行时间点恢复
 docker run -d \
   --name postgres-recovery \
+  -e POSTGRES_USER=myuser \
+  -e POSTGRES_PASSWORD=mypass \
+  -e POSTGRES_DB=mydb \
   -e RECOVERY_MODE="true" \
   -e RECOVERY_TARGET_TIME="2025-07-10 14:30:00" \
-  # ... 其他环境变量
+  -v /path/to/rclone.conf:/root/.config/rclone/rclone.conf:ro \
   ghcr.io/whispin/postgres_nrt_backup:latest
 ```
 

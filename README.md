@@ -24,7 +24,7 @@ A comprehensive PostgreSQL near real-time backup and recovery solution based on 
 # Pull the latest image
 docker pull ghcr.io/whispin/postgres_nrt_backup:latest
 
-# Run backup container
+# Method 1: Using RCLONE_CONF_BASE64 environment variable
 docker run -d \
   --name postgres-backup \
   -e POSTGRES_USER=myuser \
@@ -36,11 +36,25 @@ docker run -d \
   -v /path/to/postgres/data:/var/lib/postgresql/data:ro \
   -v /path/to/backup:/backup/local \
   ghcr.io/whispin/postgres_nrt_backup:latest
+
+# Method 2: Mounting rclone.conf file
+docker run -d \
+  --name postgres-backup \
+  -e POSTGRES_USER=myuser \
+  -e POSTGRES_PASSWORD=mypass \
+  -e POSTGRES_DB=mydb \
+  -e PGBACKREST_STANZA=main \
+  -e WAL_GROWTH_THRESHOLD="100MB" \
+  -v /path/to/postgres/data:/var/lib/postgresql/data:ro \
+  -v /path/to/backup:/backup/local \
+  -v /path/to/rclone.conf:/root/.config/rclone/rclone.conf:ro \
+  ghcr.io/whispin/postgres_nrt_backup:latest
 ```
 
 ### Recovery Mode
 
 ```bash
+# Method 1: Using RCLONE_CONF_BASE64 environment variable
 # Recover to latest backup
 docker run -d \
   --name postgres-recovery \
@@ -51,12 +65,16 @@ docker run -d \
   -e RECOVERY_MODE="true" \
   ghcr.io/whispin/postgres_nrt_backup:latest
 
+# Method 2: Mounting rclone.conf file
 # Point-in-time recovery
 docker run -d \
   --name postgres-recovery \
+  -e POSTGRES_USER=myuser \
+  -e POSTGRES_PASSWORD=mypass \
+  -e POSTGRES_DB=mydb \
   -e RECOVERY_MODE="true" \
   -e RECOVERY_TARGET_TIME="2025-07-10 14:30:00" \
-  # ... other environment variables
+  -v /path/to/rclone.conf:/root/.config/rclone/rclone.conf:ro \
   ghcr.io/whispin/postgres_nrt_backup:latest
 ```
 
@@ -93,7 +111,7 @@ docker-compose -f docker-compose.ghcr.yml up -d
 | `PGBACKREST_STANZA` | `main` | pgBackRest stanza name |
 | `BACKUP_RETENTION_DAYS` | `3` | Backup retention period in days |
 | `BASE_BACKUP_SCHEDULE` | `"0 3 * * *"` | Full backup schedule (cron format) |
-| `RCLONE_CONF_BASE64` | - | Base64 encoded rclone configuration |
+| `RCLONE_CONF_BASE64` | - | Base64 encoded rclone configuration (optional if file mounted) |
 | `RCLONE_REMOTE_PATH` | `"postgres-backups"` | Remote storage path |
 | `RECOVERY_MODE` | `"false"` | Enable recovery mode |
 | `WAL_GROWTH_THRESHOLD` | `"100MB"` | WAL growth threshold for auto backups |
@@ -111,6 +129,23 @@ docker-compose -f docker-compose.ghcr.yml up -d
 | `RECOVERY_TARGET_INCLUSIVE` | `"true"` | Include recovery target |
 | `RECOVERY_TARGET_ACTION` | `"promote"` | Action after recovery |
 
+### rclone Configuration (Choose One Method)
+
+#### Method 1: Environment Variable
+```bash
+# Encode your rclone.conf to base64
+RCLONE_CONF_BASE64=$(cat rclone.conf | base64 -w 0)
+
+# Use in docker run
+docker run -e RCLONE_CONF_BASE64="$RCLONE_CONF_BASE64" ...
+```
+
+#### Method 2: File Mount
+```bash
+# Mount rclone.conf directly
+docker run -v /path/to/rclone.conf:/root/.config/rclone/rclone.conf:ro ...
+```
+
 ### Volume Mounts
 
 | Path | Description | Permission |
@@ -118,7 +153,7 @@ docker-compose -f docker-compose.ghcr.yml up -d
 | `/var/lib/postgresql/data` | PostgreSQL data directory | Read-only |
 | `/backup/local` | Local backup storage | Read-write |
 | `/backup/logs` | Backup logs | Read-write |
-| `/root/.config/rclone/rclone.conf` | rclone configuration file | Read-only |
+| `/root/.config/rclone/rclone.conf` | rclone configuration file (optional) | Read-only |
 
 ## 🔧 Manual Operations
 
@@ -246,6 +281,7 @@ The project uses GitHub Actions for automated building and publishing:
 ## 📚 Documentation
 
 - [Quick Start Guide](QUICK_START_EN.md) - Get started in 5 minutes
+- [rclone Configuration Guide](RCLONE_CONFIGURATION_GUIDE.md) - Two methods to configure rclone
 - [Manual Backup Guide](MANUAL_BACKUP_GUIDE.md)
 - [WAL Monitor Guide](WAL_MONITOR_GUIDE.md)
 - [Recovery Guide](RECOVERY_GUIDE.md)

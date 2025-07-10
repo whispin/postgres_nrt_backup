@@ -139,13 +139,37 @@ setup_rclone() {
 
     mkdir -p "$(dirname "$RCLONE_CONFIG_PATH")"
 
-    if ! echo "$RCLONE_CONF_BASE64" | base64 -d | tr -d '\r' > "$RCLONE_CONFIG_PATH"; then
-        log "ERROR" "Failed to decode RCLONE_CONF_BASE64 or write to $RCLONE_CONFIG_PATH."
+    # Check if rclone.conf is already mounted
+    if [ -f "$RCLONE_CONFIG_PATH" ] && [ -s "$RCLONE_CONFIG_PATH" ]; then
+        log "INFO" "Found mounted rclone configuration file at $RCLONE_CONFIG_PATH"
+
+        # Verify the mounted configuration file
+        if ! rclone config show --config "$RCLONE_CONFIG_PATH" >/dev/null 2>&1; then
+            log "ERROR" "Mounted rclone configuration file is invalid"
+            return 1
+        fi
+
+        log "INFO" "Using mounted rclone configuration"
+
+    elif [ -n "$RCLONE_CONF_BASE64" ]; then
+        log "INFO" "Using RCLONE_CONF_BASE64 environment variable"
+
+        # Decode and save rclone configuration
+        if ! echo "$RCLONE_CONF_BASE64" | base64 -d | tr -d '\r' > "$RCLONE_CONFIG_PATH"; then
+            log "ERROR" "Failed to decode RCLONE_CONF_BASE64 or write to $RCLONE_CONFIG_PATH."
+            return 1
+        fi
+
+        chmod 644 "$RCLONE_CONFIG_PATH"
+        log "INFO" "Rclone configuration created from RCLONE_CONF_BASE64 at $RCLONE_CONFIG_PATH."
+
+    else
+        log "ERROR" "Neither rclone.conf file nor RCLONE_CONF_BASE64 environment variable provided"
+        log "INFO" "Please either:"
+        log "INFO" "  1. Mount rclone.conf file to: $RCLONE_CONFIG_PATH"
+        log "INFO" "  2. Set RCLONE_CONF_BASE64 environment variable"
         return 1
     fi
-    
-    chmod 644 "$RCLONE_CONFIG_PATH"
-    log "INFO" "Rclone configuration created at $RCLONE_CONFIG_PATH."
     
     # Use RCLONE_REMOTE_NAME if specified, otherwise extract first remote from config
     if [[ -n "$RCLONE_REMOTE_NAME" ]]; then

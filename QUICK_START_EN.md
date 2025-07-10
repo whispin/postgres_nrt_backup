@@ -8,9 +8,9 @@
 - PostgreSQL database to backup
 - rclone configuration for remote storage (optional)
 
-### Step 1: Prepare rclone Configuration
+### Step 1: Prepare rclone Configuration (Choose One Method)
 
-Create a base64 encoded rclone configuration:
+#### Method 1: Environment Variable (Recommended for Production)
 
 ```bash
 # Create rclone config file
@@ -28,8 +28,23 @@ RCLONE_CONF_BASE64=$(cat rclone.conf | base64 -w 0)
 echo $RCLONE_CONF_BASE64
 ```
 
+#### Method 2: File Mount (Recommended for Development)
+
+```bash
+# Create rclone config file
+cat > /path/to/rclone.conf << EOF
+[s3-remote]
+type = s3
+provider = AWS
+access_key_id = your_access_key
+secret_access_key = your_secret_key
+region = us-east-1
+EOF
+```
+
 ### Step 2: Run Backup Container
 
+#### Using Method 1 (Environment Variable):
 ```bash
 docker run -d \
   --name postgres-backup \
@@ -41,6 +56,21 @@ docker run -d \
   -e WAL_GROWTH_THRESHOLD="100MB" \
   -v /var/lib/postgresql/data:/var/lib/postgresql/data:ro \
   -v ./backup-logs:/backup/logs \
+  ghcr.io/whispin/postgres_nrt_backup:latest
+```
+
+#### Using Method 2 (File Mount):
+```bash
+docker run -d \
+  --name postgres-backup \
+  -e POSTGRES_USER=myuser \
+  -e POSTGRES_PASSWORD=mypassword \
+  -e POSTGRES_DB=mydatabase \
+  -e PGBACKREST_STANZA=main \
+  -e WAL_GROWTH_THRESHOLD="100MB" \
+  -v /var/lib/postgresql/data:/var/lib/postgresql/data:ro \
+  -v ./backup-logs:/backup/logs \
+  -v /path/to/rclone.conf:/root/.config/rclone/rclone.conf:ro \
   ghcr.io/whispin/postgres_nrt_backup:latest
 ```
 

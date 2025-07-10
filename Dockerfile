@@ -92,6 +92,9 @@ ENV RECOVERY_TARGET_XID=""
 ENV RECOVERY_TARGET_LSN=""
 ENV RECOVERY_TARGET_INCLUSIVE="true"
 ENV RECOVERY_TARGET_ACTION="promote"
+# rclone配置方式（二选一）：
+# 1. RCLONE_CONF_BASE64 - Base64编码的rclone配置
+# 2. 挂载rclone.conf文件到 /root/.config/rclone/rclone.conf
 
 # 暴露PostgreSQL端口
 EXPOSE 5432
