@@ -431,27 +431,11 @@ EOF
         return 1
     fi
     
-    # Test archive-push manually with a dummy WAL file
-    log "INFO" "Testing archive-push functionality..."
-    
-    # Create a dummy WAL file for testing
-    test_wal_file="/tmp/test_wal_segment"
-    echo "dummy wal content for testing" > "$test_wal_file"
-    
-    # Test the archive-push command
-    if su-exec postgres bash -c "export PGBACKREST_STANZA=\"${stanza_name}\" && pgbackrest --stanza=\"${stanza_name}\" archive-push \"$test_wal_file\""; then
-        log "INFO" "Archive-push test successful"
-    else
-        log "ERROR" "Archive-push test failed"
-        # Show more details about the failure
-        log "ERROR" "Testing archive-push with debug output..."
-        su-exec postgres bash -c "export PGBACKREST_STANZA=\"${stanza_name}\" && pgbackrest --stanza=\"${stanza_name}\" --log-level-console=debug archive-push \"$test_wal_file\"" || true
-    fi
-    
-    # Clean up test file
-    rm -f "$test_wal_file"
-    
     # Force a WAL switch to trigger archiving
+    log "INFO" "Forcing WAL switch to trigger archiving..."
+    if ! su-exec postgres psql -d "$pg_database" -c "SELECT pg_switch_wal();" 2>/dev/null; then
+        log "WARN" "Failed to force WAL switch, but continuing..."
+    fi
     log "INFO" "Forcing WAL switch to trigger archiving..."
     if ! su-exec postgres psql -d "$pg_database" -c "SELECT pg_switch_wal();"; then
         log "WARN" "Failed to force WAL switch, but continuing..."
