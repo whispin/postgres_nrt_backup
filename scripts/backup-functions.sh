@@ -337,7 +337,14 @@ configure_pgbackrest_stanza() {
     # Verify that archive_mode is enabled
     log "INFO" "Verifying PostgreSQL archive mode configuration..."
     local archive_mode_check
-    archive_mode_check=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -U "$pg_user" -d "$pg_database" -t -c "SHOW archive_mode;" 2>/dev/null | tr -d ' ')
+    
+    # Try connecting as postgres user via socket first (most reliable)
+    archive_mode_check=$(su-exec postgres psql -d "$pg_database" -t -c "SHOW archive_mode;" 2>/dev/null | tr -d ' ')
+    
+    # If that fails, try with the configured user
+    if [ -z "$archive_mode_check" ] || [ "$archive_mode_check" = "" ]; then
+        archive_mode_check=$(PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -U "$pg_user" -d "$pg_database" -t -c "SHOW archive_mode;" 2>/dev/null | tr -d ' ')
+    fi
 
     if [ "$archive_mode_check" != "on" ]; then
         log "ERROR" "Archive mode is not enabled (current: $archive_mode_check). This is required for pgBackRest."
@@ -354,7 +361,7 @@ configure_pgbackrest_stanza() {
 pg1-path=${pgdata}
 pg1-socket-path=${socket_dir}
 pg1-port=${pg_port}
-pg1-user=${pg_user}
+pg1-user=postgres
 pg1-database=${pg_database}
 EOF
 

@@ -142,28 +142,51 @@ EOSQL
         return 1
     fi
 
-    # If this is a fresh initialization, restart PostgreSQL to apply archive settings
-    if [ ! -f "$PGDATA/.archive_configured" ]; then
-        log "INFO" "Restarting PostgreSQL to apply archive configuration..."
-
+    # Verify archive_mode is properly configured
+    log "INFO" "Verifying archive_mode configuration..."
+    
+    # Check if archive_mode is enabled
+    archive_mode_status=$(su-exec postgres psql -d postgres -t -c "SHOW archive_mode;" 2>/dev/null | tr -d '[:space:]' || echo "")
+    
+    if [ "$archive_mode_status" != "on" ]; then
+        log "WARN" "Archive mode is not enabled (current: $archive_mode_status), restarting PostgreSQL..."
+        
         # Stop current PostgreSQL instance
         kill $POSTGRES_PID 2>/dev/null || true
         wait $POSTGRES_PID 2>/dev/null || true
-
+        
+        # Ensure archive settings are in postgresql.conf
+        if ! grep -q "archive_mode = on" "$PGDATA/postgresql.conf"; then
+            echo "archive_mode = on" >> "$PGDATA/postgresql.conf"
+        fi
+        if ! grep -q "wal_level = replica" "$PGDATA/postgresql.conf"; then
+            echo "wal_level = replica" >> "$PGDATA/postgresql.conf"
+        fi
+        if ! grep -q "archive_command" "$PGDATA/postgresql.conf"; then
+            echo "archive_command = 'pgbackrest --stanza=${PGBACKREST_STANZA:-main} archive-push %p'" >> "$PGDATA/postgresql.conf"
+        fi
+        
         # Start PostgreSQL again
         su-exec postgres postgres &
         POSTGRES_PID=$!
-
+        
         # Wait for PostgreSQL to be ready again
         if ! wait_for_postgres 120; then
             log "ERROR" "PostgreSQL failed to restart with archive configuration"
             kill $POSTGRES_PID 2>/dev/null || true
             return 1
         fi
-
-        # Mark archive as configured
-        touch "$PGDATA/.archive_configured"
-        log "INFO" "PostgreSQL restarted successfully with archive configuration"
+        
+        # Verify archive_mode is now enabled
+        archive_mode_status=$(su-exec postgres psql -d postgres -t -c "SHOW archive_mode;" 2>/dev/null | tr -d '[:space:]' || echo "")
+        if [ "$archive_mode_status" = "on" ]; then
+            log "INFO" "Archive mode successfully enabled"
+        else
+            log "ERROR" "Failed to enable archive mode (current: $archive_mode_status)"
+            return 1
+        fi
+    else
+        log "INFO" "Archive mode is already enabled"
     fi
 
     log "INFO" "PostgreSQL is ready"
