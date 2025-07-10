@@ -112,7 +112,7 @@ check_env() {
     else
         log "INFO" "All required environment variables are set."
     fi
-    
+
     # Additional checks for optional but important variables
     if [[ -z "$PGDATA" ]]; then
         log "WARN" "PGDATA environment variable not set. Using default PostgreSQL data directory."
@@ -136,9 +136,9 @@ check_env() {
 # Setup rclone
 setup_rclone() {
     log "INFO" "Setting up rclone..."
-    
+
     mkdir -p "$(dirname "$RCLONE_CONFIG_PATH")"
-    
+
     if ! echo "$RCLONE_CONF_BASE64" | base64 -d | tr -d '\r' > "$RCLONE_CONFIG_PATH"; then
         log "ERROR" "Failed to decode RCLONE_CONF_BASE64 or write to $RCLONE_CONFIG_PATH."
         return 1

@@ -82,6 +82,9 @@ ENV PGBACKREST_STANZA=""
 # 暴露PostgreSQL端口
 EXPOSE 5432
 
+# 保存原始的PostgreSQL入口点脚本
+RUN cp /usr/local/bin/docker-entrypoint.sh /usr/local/bin/postgres-docker-entrypoint.sh
+
 # 复制自定义入口点脚本
 COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
