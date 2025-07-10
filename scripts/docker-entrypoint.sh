@@ -16,7 +16,11 @@ initialize_backup_system() {
 
     # Export environment variables to /etc/environment for postgres user access
     log "INFO" "Exporting environment variables for postgres user access..."
-    printenv | grep -v "no_proxy" > /etc/environment
+    # Filter and properly format environment variables for /etc/environment
+    printenv | grep -v "no_proxy" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | while IFS='=' read -r name value; do
+        # Escape special characters in the value and ensure proper quoting
+        printf 'export %s="%s"\n' "$name" "${value//\"/\\\"}"
+    done > /etc/environment
     log "INFO" "Environment variables exported to /etc/environment"
 
     # Check environment variables

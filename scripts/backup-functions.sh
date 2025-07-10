@@ -2,7 +2,10 @@
 
 # Source environment variables if available
 if [[ -f /etc/environment ]]; then
-    source /etc/environment
+    # Safely source environment variables
+    set -a  # automatically export all variables
+    source /etc/environment 2>/dev/null || true
+    set +a  # disable automatic export
 fi
 
 # Global variable for the rclone remote name
