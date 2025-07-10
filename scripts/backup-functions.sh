@@ -398,12 +398,38 @@ EOF
     
     # Reload PostgreSQL configuration
     log "INFO" "Reloading PostgreSQL configuration..."
-    su-exec postgres pg_ctl reload -D "$pgdata"
-    
+    if ! su-exec postgres pg_ctl reload -D "$pgdata"; then
+        log "ERROR" "Failed to reload PostgreSQL configuration"
+        return 1
+    fi
+
+    # Wait for configuration to take effect
+    log "INFO" "Waiting for configuration reload to take effect..."
+    sleep 10
+
     # Verify the archive_command was updated
     log "INFO" "Verifying archive_command configuration..."
-    archive_cmd_check=$(su-exec postgres psql -d "$pg_database" -t -c "SHOW archive_command;" 2>/dev/null | sed 's/^[ \t]*//;s/[ \t]*$//')
-    log "INFO" "Current archive_command: $archive_cmd_check"
+    local max_retries=5
+    local retry_count=0
+    local archive_cmd_check=""
+
+    while [ $retry_count -lt $max_retries ]; do
+        archive_cmd_check=$(su-exec postgres psql -d "$pg_database" -t -c "SHOW archive_command;" 2>/dev/null | sed 's/^[ \t]*//;s/[ \t]*$//')
+        if [[ "$archive_cmd_check" == *"pgbackrest"* ]]; then
+            log "INFO" "Archive command updated successfully: $archive_cmd_check"
+            break
+        else
+            log "WARN" "Archive command not yet updated (attempt $((retry_count + 1))/$max_retries): $archive_cmd_check"
+            sleep 5
+            retry_count=$((retry_count + 1))
+        fi
+    done
+
+    if [[ "$archive_cmd_check" != *"pgbackrest"* ]]; then
+        log "ERROR" "Archive command was not updated after $max_retries attempts"
+        log "ERROR" "Current archive_command: $archive_cmd_check"
+        return 1
+    fi
     
     # Test archive-push manually with a dummy WAL file
     log "INFO" "Testing archive-push functionality..."
@@ -427,23 +453,50 @@ EOF
     
     # Force a WAL switch to trigger archiving
     log "INFO" "Forcing WAL switch to trigger archiving..."
-    su-exec postgres psql -d "$pg_database" -c "SELECT pg_switch_wal();" || true
-    
-    # Wait a moment for archiving to complete
-    sleep 5
+    if ! su-exec postgres psql -d "$pg_database" -c "SELECT pg_switch_wal();"; then
+        log "WARN" "Failed to force WAL switch, but continuing..."
+    fi
+
+    # Wait longer for archiving to complete
+    log "INFO" "Waiting for WAL archiving to complete..."
+    sleep 15
     
     # Check if any WAL files have been archived
     log "INFO" "Checking for archived WAL files..."
-    if [ -d "/var/lib/pgbackrest/archive/${stanza_name}" ]; then
-        archived_count=$(find "/var/lib/pgbackrest/archive/${stanza_name}" -name "*.gz" -o -name "*.lz4" -o -name "*.xz" -o -name "*.bz2" -o -name "*-*" | wc -l)
-        log "INFO" "Found ${archived_count} archived WAL files"
-        if [ "$archived_count" -gt 0 ]; then
-            log "INFO" "WAL archiving is working correctly"
-        else
-            log "WARN" "No archived WAL files found yet"
+    local archive_dir="/var/lib/pgbackrest/archive/${stanza_name}"
+    local max_wait=60
+    local wait_time=0
+    local archived_count=0
+
+    while [ $wait_time -lt $max_wait ]; do
+        if [ -d "$archive_dir" ]; then
+            archived_count=$(find "$archive_dir" -type f \( -name "*.gz" -o -name "*.lz4" -o -name "*.xz" -o -name "*.bz2" -o -name "*-*" \) | wc -l)
+            if [ "$archived_count" -gt 0 ]; then
+                log "INFO" "Found ${archived_count} archived WAL files"
+                log "INFO" "WAL archiving is working correctly"
+                break
+            fi
         fi
-    else
-        log "WARN" "WAL archive directory does not exist"
+
+        if [ $wait_time -eq 0 ]; then
+            log "INFO" "Waiting for WAL files to be archived..."
+        fi
+
+        sleep 5
+        wait_time=$((wait_time + 5))
+
+        if [ $((wait_time % 15)) -eq 0 ]; then
+            log "INFO" "Still waiting for WAL archiving... (${wait_time}s/${max_wait}s)"
+        fi
+    done
+
+    if [ "$archived_count" -eq 0 ]; then
+        log "WARN" "No archived WAL files found after ${max_wait} seconds"
+        log "WARN" "This may cause backup failures. Check PostgreSQL logs for archive errors."
+
+        # Show PostgreSQL log for debugging
+        log "INFO" "Recent PostgreSQL log entries:"
+        tail -20 "$pgdata/log/"*.log 2>/dev/null || log "WARN" "Could not read PostgreSQL logs"
     fi
     
     return 0
