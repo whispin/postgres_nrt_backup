@@ -700,7 +700,42 @@ perform_pgbackrest_backup() {
     return 0
 }
 
-# Upload pgBackRest repository to remote storage
+# Create compressed repository archive
+create_compressed_repository_archive() {
+    local backup_type="$1"
+    local stanza_name="${PGBACKREST_STANZA:-main}"
+    local timestamp=$(date '+%Y%m%d_%H%M%S')
+    local repo_path="/var/lib/pgbackrest"
+    local archive_name="pgbackrest_repo_${stanza_name}_${backup_type}_${timestamp}.tar.gz"
+    local archive_path="/tmp/${archive_name}"
+
+    log "INFO" "Creating compressed repository archive: $archive_name"
+
+    # Check if repository directory exists
+    if [[ ! -d "$repo_path" ]]; then
+        log "ERROR" "pgBackRest repository directory does not exist: $repo_path"
+        return 1
+    fi
+
+    # Create compressed archive of the entire repository
+    if ! tar -czf "$archive_path" -C "$(dirname "$repo_path")" "$(basename "$repo_path")"; then
+        log "ERROR" "Failed to create compressed repository archive"
+        return 1
+    fi
+
+    # Verify archive integrity
+    if ! tar -tzf "$archive_path" > /dev/null; then
+        log "ERROR" "Compressed repository archive verification failed"
+        rm -f "$archive_path"
+        return 1
+    fi
+
+    log "INFO" "Compressed repository archive created and verified: $archive_path"
+    echo "$archive_path"
+    return 0
+}
+
+# Upload pgBackRest repository to remote storage (compressed)
 upload_pgbackrest_repository() {
     local backup_type="$1"
     
@@ -713,25 +748,44 @@ upload_pgbackrest_repository() {
     local db_identifier=$(get_database_identifier)
     local repo_remote_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}/repository"
 
-    log "INFO" "Uploading pgBackRest repository for $backup_type backup..."
+    log "INFO" "Uploading compressed pgBackRest repository for $backup_type backup..."
+
+    # Create compressed repository archive
+    local archive_path
+    if ! archive_path=$(create_compressed_repository_archive "$backup_type"); then
+        log "ERROR" "Failed to create compressed repository archive"
+        return 1
+    fi
 
     # Create remote repository directory
     if ! rclone mkdir "${REMOTE_NAME}:${repo_remote_path}/" --config "$RCLONE_CONFIG_PATH"; then
         log "WARN" "Failed to create remote repository directory (may already exist)"
     fi
 
-    # Upload pgBackRest repository
-    local repo_path="/var/lib/pgbackrest"
-    if [ -d "$repo_path" ]; then
-        if rclone sync "$repo_path" "${REMOTE_NAME}:${repo_remote_path}" --config "$RCLONE_CONFIG_PATH" --exclude="*.lock" --exclude="*.tmp"; then
-            log "INFO" "pgBackRest repository uploaded successfully"
-            return 0
-        else
-            log "ERROR" "Failed to upload pgBackRest repository"
-            return 1
+    # Upload compressed repository archive
+    local archive_name=$(basename "$archive_path")
+    if rclone copy "$archive_path" "${REMOTE_NAME}:${repo_remote_path}/" --config "$RCLONE_CONFIG_PATH"; then
+        log "INFO" "Compressed pgBackRest repository uploaded successfully: $archive_name"
+        
+        # Clean up local archive
+        rm -f "$archive_path"
+        
+        # For incremental/differential backups, also keep a "latest" copy for easier recovery
+        if [[ "$backup_type" != "full" ]]; then
+            local latest_name="pgbackrest_repo_latest_${backup_type}.tar.gz"
+            if rclone copy "${REMOTE_NAME}:${repo_remote_path}/${archive_name}" "${REMOTE_NAME}:${repo_remote_path}/${latest_name}" --config "$RCLONE_CONFIG_PATH"; then
+                log "INFO" "Latest ${backup_type} repository archive updated: $latest_name"
+            else
+                log "WARN" "Failed to update latest ${backup_type} repository archive"
+            fi
         fi
+        
+        # Return the archive name for use in metadata
+        echo "$archive_name"
+        return 0
     else
-        log "WARN" "pgBackRest repository directory not found: $repo_path"
+        log "ERROR" "Failed to upload compressed pgBackRest repository"
+        rm -f "$archive_path"
         return 1
     fi
 }
@@ -740,22 +794,31 @@ upload_pgbackrest_repository() {
 create_backup_metadata() {
     local backup_type="$1"
     local output_file="$2"
+    local repository_archive="${3:-}"
     local stanza_name="${PGBACKREST_STANZA:-main}"
 
     # Get backup information
     local backup_info=$(su-exec postgres bash -c "export PGBACKREST_STANZA=\"$stanza_name\" && pgbackrest --stanza=\"$stanza_name\" info --output=json" 2>/dev/null)
 
-    # Create metadata
-    cat > "$output_file" << EOF
-{
-    "backup_type": "$backup_type",
-    "stanza": "$stanza_name",
-    "timestamp": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')",
-    "database_identifier": "$(get_database_identifier)",
-    "postgres_version": "$(su-exec postgres psql -t -c 'SELECT version();' 2>/dev/null | tr -d ' \n')",
-    "backup_info": $backup_info
-}
-EOF
+    # Create metadata with optional repository archive info
+    local metadata_content="{
+    \"backup_type\": \"$backup_type\",
+    \"stanza\": \"$stanza_name\",
+    \"timestamp\": \"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\",
+    \"database_identifier\": \"$(get_database_identifier)\",
+    \"postgres_version\": \"$(su-exec postgres psql -t -c 'SELECT version();' 2>/dev/null | tr -d ' \n')\""
+
+    if [[ -n "$repository_archive" ]]; then
+        metadata_content+=",
+    \"repository_archive\": \"$repository_archive\",
+    \"compression\": \"gzip\""
+    fi
+
+    metadata_content+=",
+    \"backup_info\": $backup_info
+}"
+
+    echo "$metadata_content" > "$output_file"
 
     log "INFO" "Backup metadata created: $output_file"
     return 0
@@ -863,8 +926,11 @@ perform_full_backup() {
         return 1
     fi
 
-    # Also upload pgBackRest repository to common repository directory
-    if ! upload_pgbackrest_repository "full"; then
+    # Also upload pgBackRest repository to common repository directory and get archive name
+    local repository_archive=""
+    if repository_archive=$(upload_pgbackrest_repository "full"); then
+        log "INFO" "pgBackRest repository uploaded successfully"
+    else
         log "WARN" "Failed to upload pgBackRest repository"
     fi
 
@@ -1045,8 +1111,11 @@ perform_incremental_backup() {
         return 1
     fi
 
-    # Upload pgBackRest repository to remote storage
-    if ! upload_pgbackrest_repository "incr"; then
+    # Upload pgBackRest repository to remote storage and get archive name
+    local repository_archive=""
+    if repository_archive=$(upload_pgbackrest_repository "incr"); then
+        log "INFO" "pgBackRest repository uploaded successfully"
+    else
         log "WARN" "Failed to upload pgBackRest repository for incremental backup"
     fi
 
@@ -1056,7 +1125,7 @@ perform_incremental_backup() {
     local metadata_file="/tmp/incremental_backup_${timestamp}.json"
     local remote_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}/incremental-backups"
 
-    if create_backup_metadata "incr" "$metadata_file"; then
+    if create_backup_metadata "incr" "$metadata_file" "$repository_archive"; then
         # Create remote directory
         if ! rclone mkdir "${REMOTE_NAME}:${remote_path}/" --config "$RCLONE_CONFIG_PATH"; then
             log "WARN" "Failed to create remote incremental directory (may already exist)"
@@ -1112,8 +1181,11 @@ perform_differential_backup() {
         return 1
     fi
 
-    # Upload pgBackRest repository to remote storage
-    if ! upload_pgbackrest_repository "diff"; then
+    # Upload pgBackRest repository to remote storage and get archive name
+    local repository_archive=""
+    if repository_archive=$(upload_pgbackrest_repository "diff"); then
+        log "INFO" "pgBackRest repository uploaded successfully"
+    else
         log "WARN" "Failed to upload pgBackRest repository for differential backup"
     fi
 
@@ -1123,7 +1195,7 @@ perform_differential_backup() {
     local metadata_file="/tmp/differential_backup_${timestamp}.json"
     local remote_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}/differential-backups"
 
-    if create_backup_metadata "diff" "$metadata_file"; then
+    if create_backup_metadata "diff" "$metadata_file" "$repository_archive"; then
         # Create remote directory
         if ! rclone mkdir "${REMOTE_NAME}:${remote_path}/" --config "$RCLONE_CONFIG_PATH"; then
             log "WARN" "Failed to create remote differential directory (may already exist)"

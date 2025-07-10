@@ -96,6 +96,48 @@ validate_recovery_params() {
     return 0
 }
 
+# Download and extract compressed repository archive
+download_and_extract_repository_archive() {
+    local remote_repo_path="$1"
+    local local_repo_path="$2"
+    
+    recovery_log "INFO" "Looking for compressed repository archives..."
+    
+    # List available compressed archives, prefer latest ones
+    local archives=$(rclone lsf "${REMOTE_NAME}:${remote_repo_path}/" --config "$RCLONE_CONFIG_PATH" | grep "\.tar\.gz$" | sort -r)
+    
+    if [ -z "$archives" ]; then
+        recovery_log "WARN" "No compressed repository archives found"
+        return 1
+    fi
+    
+    # Try to download and extract the most recent archive
+    local archive_name=$(echo "$archives" | head -1)
+    recovery_log "INFO" "Downloading compressed repository archive: $archive_name"
+    
+    local temp_archive="/tmp/${archive_name}"
+    
+    # Download the archive
+    if ! rclone copy "${REMOTE_NAME}:${remote_repo_path}/${archive_name}" "/tmp/" --config "$RCLONE_CONFIG_PATH"; then
+        recovery_log "ERROR" "Failed to download repository archive: $archive_name"
+        return 1
+    fi
+    
+    # Extract the archive
+    recovery_log "INFO" "Extracting repository archive..."
+    if ! tar -xzf "$temp_archive" -C "$(dirname "$local_repo_path")"; then
+        recovery_log "ERROR" "Failed to extract repository archive"
+        rm -f "$temp_archive"
+        return 1
+    fi
+    
+    # Clean up temporary archive
+    rm -f "$temp_archive"
+    
+    recovery_log "INFO" "Repository archive extracted successfully"
+    return 0
+}
+
 # Download backup repository from remote storage
 download_backup_repository() {
     recovery_log "INFO" "Downloading backup repository from remote storage..."
@@ -126,23 +168,31 @@ download_backup_repository() {
 
     recovery_log "INFO" "Downloading from ${REMOTE_NAME}:${remote_repo_path}/ to $local_repo_path"
 
-    # Download repository with progress
-    if rclone sync "${REMOTE_NAME}:${remote_repo_path}/" "$local_repo_path" \
-        --config "$RCLONE_CONFIG_PATH" \
-        --progress \
-        --exclude="*.lock" \
-        --exclude="*.tmp"; then
-        recovery_log "INFO" "Backup repository downloaded successfully"
-
-        # Set proper permissions
-        chown -R postgres:postgres "$local_repo_path"
-        chmod -R 750 "$local_repo_path"
-
-        return 0
+    # First try to download compressed archives (new format)
+    if download_and_extract_repository_archive "$remote_repo_path" "$local_repo_path"; then
+        recovery_log "INFO" "Compressed backup repository downloaded and extracted successfully"
     else
-        recovery_log "ERROR" "Failed to download backup repository"
-        return 1
+        recovery_log "INFO" "No compressed archives found, trying legacy uncompressed sync..."
+        
+        # Fallback to legacy sync method for backward compatibility
+        if rclone sync "${REMOTE_NAME}:${remote_repo_path}/" "$local_repo_path" \
+            --config "$RCLONE_CONFIG_PATH" \
+            --progress \
+            --exclude="*.lock" \
+            --exclude="*.tmp" \
+            --exclude="*.tar.gz"; then
+            recovery_log "INFO" "Legacy backup repository downloaded successfully"
+        else
+            recovery_log "ERROR" "Failed to download backup repository using both methods"
+            return 1
+        fi
     fi
+
+    # Set proper permissions
+    chown -R postgres:postgres "$local_repo_path"
+    chmod -R 750 "$local_repo_path"
+
+    return 0
 }
 
 # List available backups
@@ -396,9 +446,9 @@ perform_recovery() {
         return 1
     fi
     
-    # Setup rclone
-    if ! setup_rclone; then
-        recovery_log "ERROR" "Failed to setup rclone for recovery"
+    # Initialize environment
+    if ! initialize_environment; then
+        recovery_log "ERROR" "Failed to initialize environment for recovery"
         return 1
     fi
     

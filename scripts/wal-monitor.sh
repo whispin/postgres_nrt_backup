@@ -160,17 +160,26 @@ upload_incremental_backup() {
             wal_log "WARN" "Failed to create remote incremental directory (may already exist)"
         fi
 
-        # Upload pgBackRest repository to common repository directory
-        local backup_path="/var/lib/pgbackrest"
-        if [ -d "$backup_path" ]; then
-            if rclone sync "$backup_path" "${REMOTE_NAME}:${remote_repo_path}" --config "$RCLONE_CONFIG_PATH" --exclude="*.lock" --exclude="*.tmp"; then
-                wal_log "INFO" "Incremental backup repository synced successfully"
+        # Create compressed repository archive
+        local archive_path
+        if ! archive_path=$(create_compressed_repository_archive "incr"); then
+            wal_log "ERROR" "Failed to create compressed repository archive for WAL-triggered backup"
+            return 1
+        fi
 
-                # Create and upload metadata to incremental-specific directory
-                local timestamp=$(date '+%Y%m%d_%H%M%S')
-                local metadata_file="/tmp/wal_incremental_backup_${timestamp}.json"
+        # Upload compressed repository
+        local archive_name=$(basename "$archive_path")
+        if rclone copy "$archive_path" "${REMOTE_NAME}:${remote_repo_path}/" --config "$RCLONE_CONFIG_PATH"; then
+            wal_log "INFO" "Compressed incremental backup repository uploaded successfully: $archive_name"
+            
+            # Clean up local archive
+            rm -f "$archive_path"
 
-                cat > "$metadata_file" << EOF
+            # Create and upload metadata to incremental-specific directory
+            local timestamp=$(date '+%Y%m%d_%H%M%S')
+            local metadata_file="/tmp/wal_incremental_backup_${timestamp}.json"
+
+            cat > "$metadata_file" << EOF
 {
     "backup_type": "incr",
     "stanza": "$stanza_name",
@@ -178,22 +187,23 @@ upload_incremental_backup() {
     "database_identifier": "$db_identifier",
     "backup_label": "$backup_info",
     "triggered_by": "wal_monitor",
-    "wal_threshold": "$WAL_GROWTH_THRESHOLD"
+    "wal_threshold": "$WAL_GROWTH_THRESHOLD",
+    "repository_archive": "$archive_name"
 }
 EOF
 
-                if rclone copy "$metadata_file" "${REMOTE_NAME}:${remote_incr_path}/" --config "$RCLONE_CONFIG_PATH"; then
-                    wal_log "INFO" "Incremental backup metadata uploaded successfully"
-                else
-                    wal_log "WARN" "Failed to upload incremental backup metadata"
-                fi
-
-                rm -f "$metadata_file"
-                return 0
+            if rclone copy "$metadata_file" "${REMOTE_NAME}:${remote_incr_path}/" --config "$RCLONE_CONFIG_PATH"; then
+                wal_log "INFO" "Incremental backup metadata uploaded successfully"
             else
-                wal_log "ERROR" "Failed to sync incremental backup repository"
-                return 1
+                wal_log "WARN" "Failed to upload incremental backup metadata"
             fi
+
+            rm -f "$metadata_file"
+            return 0
+        else
+            wal_log "ERROR" "Failed to upload compressed incremental backup repository"
+            rm -f "$archive_path"
+            return 1
         fi
     else
         wal_log "WARN" "No incremental backup found to upload"
