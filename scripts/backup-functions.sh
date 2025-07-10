@@ -319,8 +319,20 @@ configure_pgbackrest_stanza() {
     local socket_dir="${PGHOST:-/var/run/postgresql}"
     local pg_port="${PGPORT:-5432}"
     local pg_user="${POSTGRES_USER:-postgres}"
+    local pg_database="${POSTGRES_DB:-postgres}"
 
     log "INFO" "Configuring pgbackrest stanza: $stanza_name"
+    log "INFO" "Using pgdata: $pgdata"
+    log "INFO" "Using socket dir: $socket_dir"
+    log "INFO" "Using port: $pg_port"
+    log "INFO" "Using user: $pg_user"
+    log "INFO" "Using database: $pg_database"
+
+    # Ensure PostgreSQL is running before configuring stanza
+    if ! wait_for_postgres 60; then
+        log "ERROR" "PostgreSQL is not ready for stanza configuration"
+        return 1
+    fi
 
     # Create stanza configuration
     cat >> /etc/pgbackrest/pgbackrest.conf << EOF
@@ -330,15 +342,25 @@ pg1-path=${pgdata}
 pg1-socket-path=${socket_dir}
 pg1-port=${pg_port}
 pg1-user=${pg_user}
-pg1-database=postgres
+pg1-database=${pg_database}
 EOF
 
     log "INFO" "Stanza configuration added to pgbackrest.conf"
 
-    # Create the stanza
+    # Fix permissions on config file
+    chown postgres:postgres /etc/pgbackrest/pgbackrest.conf
+    chmod 640 /etc/pgbackrest/pgbackrest.conf
+
+    # Show the configuration for debugging
+    log "DEBUG" "Current pgbackrest configuration:"
+    cat /etc/pgbackrest/pgbackrest.conf
+
+    # Create the stanza using su-exec instead of su
     log "INFO" "Creating pgbackrest stanza..."
-    if ! su - postgres -c "pgbackrest --stanza=${stanza_name} stanza-create"; then
+    if ! su-exec postgres pgbackrest --stanza="${stanza_name}" stanza-create; then
         log "ERROR" "Failed to create pgbackrest stanza"
+        log "ERROR" "Checking pgbackrest configuration..."
+        su-exec postgres pgbackrest --stanza="${stanza_name}" check || true
         return 1
     fi
 
@@ -353,10 +375,18 @@ perform_pgbackrest_backup() {
 
     log "INFO" "Starting pgbackrest $backup_type backup for stanza: $stanza_name"
 
-    # Perform the backup
+    # Ensure PostgreSQL is ready
+    if ! wait_for_postgres 30; then
+        log "ERROR" "PostgreSQL is not ready for backup"
+        return 1
+    fi
+
+    # Perform the backup using su-exec
     local backup_output
-    if ! backup_output=$(su - postgres -c "pgbackrest --stanza=${stanza_name} --type=${backup_type} backup" 2>&1); then
+    if ! backup_output=$(su-exec postgres pgbackrest --stanza="${stanza_name}" --type="${backup_type}" backup 2>&1); then
         log "ERROR" "Pgbackrest backup failed: $backup_output"
+        log "ERROR" "Checking stanza status..."
+        su-exec postgres pgbackrest --stanza="${stanza_name}" info || true
         return 1
     fi
 
@@ -365,7 +395,7 @@ perform_pgbackrest_backup() {
 
     # Get the latest backup info
     local backup_info
-    if ! backup_info=$(su - postgres -c "pgbackrest --stanza=${stanza_name} info --output=json" 2>/dev/null); then
+    if ! backup_info=$(su-exec postgres pgbackrest --stanza="${stanza_name}" info --output=json 2>/dev/null); then
         log "WARN" "Could not retrieve backup info"
         return 0
     fi

@@ -138,6 +138,13 @@ EOSQL
 setup_backup_system() {
     log "INFO" "Setting up backup system..."
 
+    # Configure pgBackRest stanza
+    log "INFO" "Configuring pgBackRest..."
+    if ! configure_pgbackrest_stanza; then
+        log "ERROR" "Failed to configure pgBackRest stanza"
+        return 1
+    fi
+
     # Setup cron jobs
     if ! /backup/scripts/setup-cron.sh; then
         log "ERROR" "Failed to setup cron jobs"
