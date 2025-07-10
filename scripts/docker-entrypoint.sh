@@ -144,6 +144,20 @@ setup_backup_system() {
         return 1
     fi
 
+    # Start WAL monitor if enabled
+    if [ "${ENABLE_WAL_MONITOR:-true}" = "true" ]; then
+        log "INFO" "Starting WAL growth monitor..."
+        log "INFO" "WAL growth threshold: ${WAL_GROWTH_THRESHOLD:-100MB}"
+        log "INFO" "WAL monitor interval: ${WAL_MONITOR_INTERVAL:-60}s"
+
+        # Start WAL monitor in background
+        /backup/scripts/wal-monitor.sh &
+        WAL_MONITOR_PID=$!
+        log "INFO" "WAL monitor started with PID: $WAL_MONITOR_PID"
+    else
+        log "INFO" "WAL monitor disabled"
+    fi
+
     log "INFO" "Backup system setup completed"
     return 0
 }
@@ -180,6 +194,17 @@ main() {
 # Handle script termination
 cleanup() {
     log "INFO" "Container shutting down..."
+
+    # Stop WAL monitor if running
+    if [ -n "$WAL_MONITOR_PID" ] && kill -0 "$WAL_MONITOR_PID" 2>/dev/null; then
+        log "INFO" "Stopping WAL monitor..."
+        kill -TERM "$WAL_MONITOR_PID" 2>/dev/null || true
+        sleep 2
+        if kill -0 "$WAL_MONITOR_PID" 2>/dev/null; then
+            kill -KILL "$WAL_MONITOR_PID" 2>/dev/null || true
+        fi
+    fi
+
     # Gracefully stop PostgreSQL if it's running
     if [ -n "$POSTGRES_PID" ] && kill -0 "$POSTGRES_PID" 2>/dev/null; then
         log "INFO" "Stopping PostgreSQL gracefully..."
@@ -197,8 +222,10 @@ cleanup() {
             kill -KILL "$POSTGRES_PID" 2>/dev/null || true
         fi
     fi
+
     # Kill any remaining background processes
     pkill -f "crond" || true
+    pkill -f "wal-monitor" || true
 }
 
 trap cleanup EXIT

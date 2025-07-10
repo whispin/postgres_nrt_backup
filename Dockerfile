@@ -12,6 +12,8 @@ RUN apk add --no-cache \
     findutils \
     dcron \
     su-exec \
+    bc \
+    jq \
     build-base \
     gcc \
     make \
@@ -81,6 +83,9 @@ ENV BASE_BACKUP_SCHEDULE="0 3 * * *"
 ENV RCLONE_REMOTE_PATH="postgres-backups"
 ENV RECOVERY_MODE="false"
 ENV PGBACKREST_STANZA=""
+ENV WAL_GROWTH_THRESHOLD="100MB"
+ENV WAL_MONITOR_INTERVAL=60
+ENV ENABLE_WAL_MONITOR="true"
 
 # 暴露PostgreSQL端口
 EXPOSE 5432

@@ -467,3 +467,51 @@ wait_for_postgres() {
     log "INFO" "PostgreSQL is ready and authentication confirmed."
     return 0
 }
+
+# Perform incremental backup
+perform_incremental_backup() {
+    log "INFO" "Starting incremental backup process..."
+
+    # Configure pgbackrest stanza if not already done
+    local stanza_name="${PGBACKREST_STANZA:-main}"
+    if ! su - postgres -c "pgbackrest --stanza=${stanza_name} info" > /dev/null 2>&1; then
+        log "INFO" "Stanza not found, creating stanza..."
+        if ! create_pgbackrest_stanza; then
+            log "ERROR" "Failed to create pgbackrest stanza"
+            return 1
+        fi
+    fi
+
+    # Perform pgbackrest incremental backup
+    if ! perform_pgbackrest_backup "incr"; then
+        log "ERROR" "Pgbackrest incremental backup failed"
+        return 1
+    fi
+
+    log "INFO" "Incremental backup completed successfully"
+    return 0
+}
+
+# Perform differential backup
+perform_differential_backup() {
+    log "INFO" "Starting differential backup process..."
+
+    # Configure pgbackrest stanza if not already done
+    local stanza_name="${PGBACKREST_STANZA:-main}"
+    if ! su - postgres -c "pgbackrest --stanza=${stanza_name} info" > /dev/null 2>&1; then
+        log "INFO" "Stanza not found, creating stanza..."
+        if ! create_pgbackrest_stanza; then
+            log "ERROR" "Failed to create pgbackrest stanza"
+            return 1
+        fi
+    fi
+
+    # Perform pgbackrest differential backup
+    if ! perform_pgbackrest_backup "diff"; then
+        log "ERROR" "Pgbackrest differential backup failed"
+        return 1
+    fi
+
+    log "INFO" "Differential backup completed successfully"
+    return 0
+}
