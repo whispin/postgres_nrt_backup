@@ -59,20 +59,33 @@ test_remote_connection() {
     
     # Test backup path
     local db_identifier=$(get_database_identifier)
-    local remote_repo_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}"
-    
-    echo "Testing backup path: ${REMOTE_NAME}:${remote_repo_path}/"
-    if rclone lsf "${REMOTE_NAME}:${remote_repo_path}/" --config "$RCLONE_CONFIG_PATH" >/dev/null 2>&1; then
-        echo "✅ Backup path accessible"
-        
+    local remote_base_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}"
+
+    echo "Testing backup base path: ${REMOTE_NAME}:${remote_base_path}/"
+    if rclone lsf "${REMOTE_NAME}:${remote_base_path}/" --config "$RCLONE_CONFIG_PATH" >/dev/null 2>&1; then
+        echo "✅ Backup base path accessible"
+
         # Show directory structure
         echo ""
-        echo "Available directories:"
-        rclone lsd "${REMOTE_NAME}:${remote_repo_path}/" --config "$RCLONE_CONFIG_PATH" 2>/dev/null || echo "No subdirectories found"
-        
+        echo "Available backup directories:"
+        rclone lsd "${REMOTE_NAME}:${remote_base_path}/" --config "$RCLONE_CONFIG_PATH" 2>/dev/null || echo "No subdirectories found"
+
+        # Check specific backup type directories
+        echo ""
+        echo "Checking backup type directories:"
+        for backup_type in "full-backups" "incremental-backups" "differential-backups" "repository"; do
+            local type_path="${remote_base_path}/${backup_type}"
+            if rclone lsf "${REMOTE_NAME}:${type_path}/" --config "$RCLONE_CONFIG_PATH" >/dev/null 2>&1; then
+                local file_count=$(rclone lsf "${REMOTE_NAME}:${type_path}/" --config "$RCLONE_CONFIG_PATH" | wc -l)
+                echo "  ✅ $backup_type: $file_count files"
+            else
+                echo "  ❌ $backup_type: not found"
+            fi
+        done
+
         return 0
     else
-        echo "❌ Backup path not accessible or empty"
+        echo "❌ Backup base path not accessible or empty"
         return 1
     fi
 }

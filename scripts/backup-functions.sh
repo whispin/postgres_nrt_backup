@@ -232,38 +232,59 @@ cleanup_old_backups() {
     local backup_type="$1"
     local retention_days="${BACKUP_RETENTION_DAYS:-3}"
     local cutoff_date=$(date -d "$retention_days days ago" +%Y%m%d)
-    
+
     local db_identifier=$(get_database_identifier)
     local remote_base_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}"
-    
-    log "INFO" "Cleaning up $backup_type backups older than $retention_days days in ${remote_base_path}/${backup_type}/"
-    
+
+    # Map backup types to directory names
+    local backup_dir
+    case "$backup_type" in
+        "base"|"full")
+            backup_dir="full-backups"
+            ;;
+        "incr"|"incremental")
+            backup_dir="incremental-backups"
+            ;;
+        "diff"|"differential")
+            backup_dir="differential-backups"
+            ;;
+        *)
+            log "WARN" "Unknown backup type '$backup_type'. Skipping cleanup."
+            return 0
+            ;;
+    esac
+
+    log "INFO" "Cleaning up $backup_type backups older than $retention_days days in ${remote_base_path}/${backup_dir}/"
+
     # Check if the remote directory exists
-    if ! rclone lsd "${REMOTE_NAME}:${remote_base_path}/${backup_type}/" --config "$RCLONE_CONFIG_PATH" > /dev/null 2>&1; then
-        log "WARN" "Remote directory ${remote_base_path}/${backup_type}/ does not exist. Skipping cleanup."
+    if ! rclone lsd "${REMOTE_NAME}:${remote_base_path}/${backup_dir}/" --config "$RCLONE_CONFIG_PATH" > /dev/null 2>&1; then
+        log "WARN" "Remote directory ${remote_base_path}/${backup_dir}/ does not exist. Skipping cleanup."
         return 0
     fi
-    
-    # Only handle base backups now (WAL archiving removed)
-    if [[ "$backup_type" == "base" ]]; then
-        rclone lsf "${REMOTE_NAME}:${remote_base_path}/${backup_type}/" --config "$RCLONE_CONFIG_PATH" | while read -r file; do
-            if [[ -z "$file" ]]; then
-                continue
-            fi
-            
-            # Support both old format (YYYYMMDD.tar.gz) and new format (YYYYMMDD_HHMMSS.tar.gz)
-            if [[ "$file" =~ ([0-9]{8})(_[0-9]{6})?\.tar\.gz$ ]]; then
-                file_date="${BASH_REMATCH[1]}"
-                if [[ "$file_date" < "$cutoff_date" ]]; then
-                    log "INFO" "Deleting old base backup: $file"
-                    rclone delete "${REMOTE_NAME}:${remote_base_path}/${backup_type}/${file}" --config "$RCLONE_CONFIG_PATH"
-                fi
-            fi
-        done
-    else
-        log "WARN" "Backup type '$backup_type' is not supported. Only 'base' backups are supported."
-    fi
-    
+
+    # Clean up backup files
+    rclone lsf "${REMOTE_NAME}:${remote_base_path}/${backup_dir}/" --config "$RCLONE_CONFIG_PATH" | while read -r file; do
+        if [[ -z "$file" ]]; then
+            continue
+        fi
+
+        # Handle different file types
+        local file_date=""
+
+        # Support backup archives (YYYYMMDD_HHMMSS.tar.gz)
+        if [[ "$file" =~ ([0-9]{8})(_[0-9]{6})?\.tar\.gz$ ]]; then
+            file_date="${BASH_REMATCH[1]}"
+        # Support metadata files (backup_type_YYYYMMDD_HHMMSS.json)
+        elif [[ "$file" =~ ([0-9]{8})_[0-9]{6}\.json$ ]]; then
+            file_date="${BASH_REMATCH[1]}"
+        fi
+
+        if [[ -n "$file_date" && "$file_date" < "$cutoff_date" ]]; then
+            log "INFO" "Deleting old $backup_type backup file: $file"
+            rclone delete "${REMOTE_NAME}:${remote_base_path}/${backup_dir}/${file}" --config "$RCLONE_CONFIG_PATH"
+        fi
+    done
+
     log "INFO" "Cleanup for ${backup_type} backups completed."
 }
 
@@ -326,6 +347,60 @@ perform_pgbackrest_backup() {
     fi
 
     log "INFO" "Latest backup info retrieved"
+    return 0
+}
+
+# Upload pgBackRest repository to remote storage
+upload_pgbackrest_repository() {
+    local backup_type="$1"
+    local db_identifier=$(get_database_identifier)
+    local repo_remote_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}/repository"
+
+    log "INFO" "Uploading pgBackRest repository for $backup_type backup..."
+
+    # Create remote repository directory
+    if ! rclone mkdir "${REMOTE_NAME}:${repo_remote_path}/" --config "$RCLONE_CONFIG_PATH"; then
+        log "WARN" "Failed to create remote repository directory (may already exist)"
+    fi
+
+    # Upload pgBackRest repository
+    local repo_path="/var/lib/pgbackrest"
+    if [ -d "$repo_path" ]; then
+        if rclone sync "$repo_path" "${REMOTE_NAME}:${repo_remote_path}" --config "$RCLONE_CONFIG_PATH" --exclude="*.lock" --exclude="*.tmp"; then
+            log "INFO" "pgBackRest repository uploaded successfully"
+            return 0
+        else
+            log "ERROR" "Failed to upload pgBackRest repository"
+            return 1
+        fi
+    else
+        log "WARN" "pgBackRest repository directory not found: $repo_path"
+        return 1
+    fi
+}
+
+# Create backup metadata file
+create_backup_metadata() {
+    local backup_type="$1"
+    local output_file="$2"
+    local stanza_name="${PGBACKREST_STANZA:-main}"
+
+    # Get backup information
+    local backup_info=$(su-exec postgres pgbackrest --stanza="$stanza_name" info --output=json 2>/dev/null)
+
+    # Create metadata
+    cat > "$output_file" << EOF
+{
+    "backup_type": "$backup_type",
+    "stanza": "$stanza_name",
+    "timestamp": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')",
+    "database_identifier": "$(get_database_identifier)",
+    "postgres_version": "$(su-exec postgres psql -t -c 'SELECT version();' 2>/dev/null | tr -d ' \n')",
+    "backup_info": $backup_info
+}
+EOF
+
+    log "INFO" "Backup metadata created: $output_file"
     return 0
 }
 
@@ -407,10 +482,10 @@ perform_full_backup() {
         return 1
     fi
 
-    # Upload to remote storage
+    # Upload to remote storage (full backup directory)
     local timestamp=$(date '+%Y%m%d_%H%M%S')
     local db_identifier=$(get_database_identifier)
-    local remote_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}/base"
+    local remote_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}/full-backups"
     local remote_filename="pgbackrest_${stanza_name}_${timestamp}.tar.gz"
 
     if ! compress_and_upload "$archive_path" "$remote_path" "$remote_filename"; then
@@ -419,11 +494,16 @@ perform_full_backup() {
         return 1
     fi
 
+    # Also upload pgBackRest repository to common repository directory
+    if ! upload_pgbackrest_repository "full"; then
+        log "WARN" "Failed to upload pgBackRest repository"
+    fi
+
     # Clean up local archive
     rm -f "$archive_path"
 
     # Clean up old backups
-    cleanup_old_backups "base"
+    cleanup_old_backups "full"
 
     log "INFO" "Complete backup process finished successfully"
     return 0
@@ -530,6 +610,33 @@ perform_incremental_backup() {
         return 1
     fi
 
+    # Upload pgBackRest repository to remote storage
+    if ! upload_pgbackrest_repository "incr"; then
+        log "WARN" "Failed to upload pgBackRest repository for incremental backup"
+    fi
+
+    # Create and upload backup metadata
+    local timestamp=$(date '+%Y%m%d_%H%M%S')
+    local db_identifier=$(get_database_identifier)
+    local metadata_file="/tmp/incremental_backup_${timestamp}.json"
+    local remote_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}/incremental-backups"
+
+    if create_backup_metadata "incr" "$metadata_file"; then
+        # Create remote directory
+        if ! rclone mkdir "${REMOTE_NAME}:${remote_path}/" --config "$RCLONE_CONFIG_PATH"; then
+            log "WARN" "Failed to create remote incremental directory (may already exist)"
+        fi
+
+        # Upload metadata
+        if rclone copy "$metadata_file" "${REMOTE_NAME}:${remote_path}/" --config "$RCLONE_CONFIG_PATH"; then
+            log "INFO" "Incremental backup metadata uploaded successfully"
+        else
+            log "WARN" "Failed to upload incremental backup metadata"
+        fi
+
+        rm -f "$metadata_file"
+    fi
+
     log "INFO" "Incremental backup completed successfully"
     return 0
 }
@@ -562,6 +669,33 @@ perform_differential_backup() {
     if ! perform_pgbackrest_backup "diff"; then
         log "ERROR" "Pgbackrest differential backup failed"
         return 1
+    fi
+
+    # Upload pgBackRest repository to remote storage
+    if ! upload_pgbackrest_repository "diff"; then
+        log "WARN" "Failed to upload pgBackRest repository for differential backup"
+    fi
+
+    # Create and upload backup metadata
+    local timestamp=$(date '+%Y%m%d_%H%M%S')
+    local db_identifier=$(get_database_identifier)
+    local metadata_file="/tmp/differential_backup_${timestamp}.json"
+    local remote_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}/differential-backups"
+
+    if create_backup_metadata "diff" "$metadata_file"; then
+        # Create remote directory
+        if ! rclone mkdir "${REMOTE_NAME}:${remote_path}/" --config "$RCLONE_CONFIG_PATH"; then
+            log "WARN" "Failed to create remote differential directory (may already exist)"
+        fi
+
+        # Upload metadata
+        if rclone copy "$metadata_file" "${REMOTE_NAME}:${remote_path}/" --config "$RCLONE_CONFIG_PATH"; then
+            log "INFO" "Differential backup metadata uploaded successfully"
+        else
+            log "WARN" "Failed to upload differential backup metadata"
+        fi
+
+        rm -f "$metadata_file"
     fi
 
     log "INFO" "Differential backup completed successfully"

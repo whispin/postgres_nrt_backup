@@ -195,24 +195,53 @@ perform_wal_triggered_backup() {
 upload_incremental_backup() {
     local stanza_name="${PGBACKREST_STANZA:-main}"
     local db_identifier=$(get_database_identifier)
-    local remote_incr_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}/incremental"
-    
+    local remote_repo_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}/repository"
+    local remote_incr_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}/incremental-backups"
+
     # Get latest incremental backup info
-    local backup_info=$(pgbackrest --stanza="$stanza_name" info --output=json 2>/dev/null | jq -r '.[] | .backup[] | select(.type=="incr") | .label' | tail -1)
-    
+    local backup_info=$(su-exec postgres pgbackrest --stanza="$stanza_name" info --output=json 2>/dev/null | jq -r '.[] | .backup[] | select(.type=="incr") | .label' | tail -1)
+
     if [ -n "$backup_info" ]; then
         wal_log "INFO" "Uploading incremental backup: $backup_info"
-        
-        # Create remote directory
+
+        # Create remote directories
+        if ! rclone mkdir "${REMOTE_NAME}:${remote_repo_path}/" --config "$RCLONE_CONFIG_PATH"; then
+            wal_log "WARN" "Failed to create remote repository directory (may already exist)"
+        fi
+
         if ! rclone mkdir "${REMOTE_NAME}:${remote_incr_path}/" --config "$RCLONE_CONFIG_PATH"; then
             wal_log "WARN" "Failed to create remote incremental directory (may already exist)"
         fi
-        
-        # Upload backup files (this is a simplified approach - in practice, pgBackRest manages its own repository)
+
+        # Upload pgBackRest repository to common repository directory
         local backup_path="/var/lib/pgbackrest"
         if [ -d "$backup_path" ]; then
-            if rclone sync "$backup_path" "${REMOTE_NAME}:${remote_incr_path}/repository" --config "$RCLONE_CONFIG_PATH" --exclude="*.lock"; then
+            if rclone sync "$backup_path" "${REMOTE_NAME}:${remote_repo_path}" --config "$RCLONE_CONFIG_PATH" --exclude="*.lock" --exclude="*.tmp"; then
                 wal_log "INFO" "Incremental backup repository synced successfully"
+
+                # Create and upload metadata to incremental-specific directory
+                local timestamp=$(date '+%Y%m%d_%H%M%S')
+                local metadata_file="/tmp/wal_incremental_backup_${timestamp}.json"
+
+                cat > "$metadata_file" << EOF
+{
+    "backup_type": "incr",
+    "stanza": "$stanza_name",
+    "timestamp": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')",
+    "database_identifier": "$db_identifier",
+    "backup_label": "$backup_info",
+    "triggered_by": "wal_monitor",
+    "wal_threshold": "$WAL_GROWTH_THRESHOLD"
+}
+EOF
+
+                if rclone copy "$metadata_file" "${REMOTE_NAME}:${remote_incr_path}/" --config "$RCLONE_CONFIG_PATH"; then
+                    wal_log "INFO" "Incremental backup metadata uploaded successfully"
+                else
+                    wal_log "WARN" "Failed to upload incremental backup metadata"
+                fi
+
+                rm -f "$metadata_file"
                 return 0
             else
                 wal_log "ERROR" "Failed to sync incremental backup repository"

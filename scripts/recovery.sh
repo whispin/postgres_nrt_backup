@@ -99,23 +99,33 @@ validate_recovery_params() {
 # Download backup repository from remote storage
 download_backup_repository() {
     recovery_log "INFO" "Downloading backup repository from remote storage..."
-    
+
     local db_identifier=$(get_database_identifier)
     local remote_repo_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}/repository"
     local local_repo_path="/var/lib/pgbackrest"
-    
+
     # Create local repository directory
     mkdir -p "$local_repo_path"
     chown postgres:postgres "$local_repo_path"
-    
+
     # Check if remote repository exists
     if ! rclone lsf "${REMOTE_NAME}:${remote_repo_path}/" --config "$RCLONE_CONFIG_PATH" >/dev/null 2>&1; then
         recovery_log "ERROR" "Remote backup repository not found: ${REMOTE_NAME}:${remote_repo_path}/"
-        return 1
+        recovery_log "INFO" "Attempting to find backup repository in legacy location..."
+
+        # Try legacy location for backward compatibility
+        local legacy_repo_path="${RCLONE_REMOTE_PATH:-postgres-backups}/${db_identifier}/base"
+        if rclone lsf "${REMOTE_NAME}:${legacy_repo_path}/" --config "$RCLONE_CONFIG_PATH" >/dev/null 2>&1; then
+            recovery_log "INFO" "Found backup repository in legacy location"
+            remote_repo_path="$legacy_repo_path"
+        else
+            recovery_log "ERROR" "No backup repository found in any location"
+            return 1
+        fi
     fi
-    
+
     recovery_log "INFO" "Downloading from ${REMOTE_NAME}:${remote_repo_path}/ to $local_repo_path"
-    
+
     # Download repository with progress
     if rclone sync "${REMOTE_NAME}:${remote_repo_path}/" "$local_repo_path" \
         --config "$RCLONE_CONFIG_PATH" \
@@ -123,11 +133,11 @@ download_backup_repository() {
         --exclude="*.lock" \
         --exclude="*.tmp"; then
         recovery_log "INFO" "Backup repository downloaded successfully"
-        
+
         # Set proper permissions
         chown -R postgres:postgres "$local_repo_path"
         chmod -R 750 "$local_repo_path"
-        
+
         return 0
     else
         recovery_log "ERROR" "Failed to download backup repository"
