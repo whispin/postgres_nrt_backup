@@ -383,7 +383,7 @@ EOF
         su-exec postgres bash -c "export PGBACKREST_STANZA=\"${stanza_name}\" && pgbackrest check" || true
         # Try with command line parameter as fallback
         log "INFO" "Trying with command line parameter as fallback..."
-        su-exec postgres pgbackrest --stanza="${stanza_name}" stanza-create || true
+        su-exec postgres bash -c "export PGBACKREST_STANZA=\"${stanza_name}\" && pgbackrest --stanza=\"${stanza_name}\" stanza-create" || true
         return 1
     fi
 
@@ -439,13 +439,13 @@ EOF
     echo "dummy wal content for testing" > "$test_wal_file"
     
     # Test the archive-push command
-    if su-exec postgres pgbackrest --stanza="${stanza_name}" archive-push "$test_wal_file"; then
+    if su-exec postgres bash -c "export PGBACKREST_STANZA=\"${stanza_name}\" && pgbackrest --stanza=\"${stanza_name}\" archive-push \"$test_wal_file\""; then
         log "INFO" "Archive-push test successful"
     else
         log "ERROR" "Archive-push test failed"
         # Show more details about the failure
         log "ERROR" "Testing archive-push with debug output..."
-        su-exec postgres pgbackrest --stanza="${stanza_name}" --log-level-console=debug archive-push "$test_wal_file" || true
+        su-exec postgres bash -c "export PGBACKREST_STANZA=\"${stanza_name}\" && pgbackrest --stanza=\"${stanza_name}\" --log-level-console=debug archive-push \"$test_wal_file\"" || true
     fi
     
     # Clean up test file
@@ -544,7 +544,8 @@ verify_wal_archiving() {
     
     while [ $wait_time -lt $max_wait ]; do
         if [ -d "$archive_dir" ]; then
-            local archived_count=$(find "$archive_dir" -type f \( -name "*.gz" -o -name "*.lz4" -o -name "*.xz" -o -name "*.bz2" -o -name "*-*" \) -newer "$archive_dir" 2>/dev/null | wc -l)
+            # Look for any archived WAL files (recent ones)
+            local archived_count=$(find "$archive_dir" -type f \( -name "*.gz" -o -name "*.lz4" -o -name "*.xz" -o -name "*.bz2" -o -name "*-*" \) -mmin -2 2>/dev/null | wc -l)
             if [ "$archived_count" -gt 0 ]; then
                 log "INFO" "WAL archiving verified - found newly archived WAL files"
                 return 0
@@ -647,7 +648,7 @@ create_backup_metadata() {
     local stanza_name="${PGBACKREST_STANZA:-main}"
 
     # Get backup information
-    local backup_info=$(su-exec postgres pgbackrest --stanza="$stanza_name" info --output=json 2>/dev/null)
+    local backup_info=$(su-exec postgres bash -c "export PGBACKREST_STANZA=\"$stanza_name\" && pgbackrest --stanza=\"$stanza_name\" info --output=json" 2>/dev/null)
 
     # Create metadata
     cat > "$output_file" << EOF
@@ -907,7 +908,7 @@ perform_incremental_backup() {
 
     # Configure pgbackrest stanza if not already done
     local stanza_name="${PGBACKREST_STANZA:-main}"
-    if ! su-exec postgres pgbackrest --stanza="$stanza_name" info > /dev/null 2>&1; then
+    if ! su-exec postgres bash -c "export PGBACKREST_STANZA=\"$stanza_name\" && pgbackrest --stanza=\"$stanza_name\" info" > /dev/null 2>&1; then
         log "INFO" "Stanza not found, creating stanza..."
         if ! create_pgbackrest_stanza; then
             log "ERROR" "Failed to create pgbackrest stanza"
@@ -968,7 +969,7 @@ perform_differential_backup() {
 
     # Configure pgbackrest stanza if not already done
     local stanza_name="${PGBACKREST_STANZA:-main}"
-    if ! su-exec postgres pgbackrest --stanza="$stanza_name" info > /dev/null 2>&1; then
+    if ! su-exec postgres bash -c "export PGBACKREST_STANZA=\"$stanza_name\" && pgbackrest --stanza=\"$stanza_name\" info" > /dev/null 2>&1; then
         log "INFO" "Stanza not found, creating stanza..."
         if ! create_pgbackrest_stanza; then
             log "ERROR" "Failed to create pgbackrest stanza"
