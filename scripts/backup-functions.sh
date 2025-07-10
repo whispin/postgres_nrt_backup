@@ -389,12 +389,18 @@ EOF
 
     log "INFO" "Pgbackrest stanza created successfully"
     
+    # Ensure proper permissions for pgBackRest directories
+    log "INFO" "Setting proper permissions for pgBackRest directories..."
+    chown -R postgres:postgres /var/lib/pgbackrest /var/log/pgbackrest /etc/pgbackrest
+    chmod -R 750 /var/lib/pgbackrest /var/log/pgbackrest
+    chmod 640 /etc/pgbackrest/pgbackrest.conf
+    
     # Now update the archive_command to use pgbackrest
     log "INFO" "Updating archive_command in postgresql.conf..."
     local pgdata="${PGDATA:-/var/lib/postgresql/data}"
     
-    # Update the archive_command to use pgbackrest
-    sed -i "s|archive_command = '/bin/true'|archive_command = 'pgbackrest --stanza=${stanza_name} archive-push %p'|g" "$pgdata/postgresql.conf"
+    # Update the archive_command to use pgbackrest with proper environment
+    sed -i "s|archive_command = '/bin/true'|archive_command = 'PGBACKREST_STANZA=${stanza_name} pgbackrest --stanza=${stanza_name} archive-push %p'|g" "$pgdata/postgresql.conf"
     
     # Reload PostgreSQL configuration
     log "INFO" "Reloading PostgreSQL configuration..."
@@ -489,6 +495,24 @@ EOF
         # Show current archive_command
         local current_archive_cmd=$(su-exec postgres psql -d "$pg_database" -t -c "SHOW archive_command;" 2>/dev/null | sed 's/^[ \t]*//;s/[ \t]*$//')
         log "ERROR" "Current archive_command: $current_archive_cmd"
+        
+        # Try to manually test archive command
+        log "INFO" "Testing archive command manually..."
+        local wal_dir="${PGDATA:-/var/lib/postgresql/data}/pg_wal"
+        if [ -d "$wal_dir" ]; then
+            # Find a WAL file to test with
+            local test_wal_file=$(find "$wal_dir" -name "[0-9A-F]*" -type f | head -1)
+            if [ -n "$test_wal_file" ]; then
+                log "INFO" "Testing with WAL file: $(basename "$test_wal_file")"
+                if su-exec postgres bash -c "export PGBACKREST_STANZA=\"${stanza_name}\" && pgbackrest --stanza=\"${stanza_name}\" archive-push \"$test_wal_file\""; then
+                    log "INFO" "Manual archive test succeeded"
+                else
+                    log "ERROR" "Manual archive test failed"
+                fi
+            else
+                log "WARN" "No WAL files found for testing"
+            fi
+        fi
         
         return 1
     fi
