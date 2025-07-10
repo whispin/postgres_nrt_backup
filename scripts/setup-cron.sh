@@ -6,14 +6,17 @@ source /backup/scripts/backup-functions.sh
 
 setup_cron() {
     log "INFO" "Setting up cron jobs for backup system..."
-    
-    # Get backup schedule from environment variable
-    local backup_schedule="${BASE_BACKUP_SCHEDULE:-0 3 * * *}"
-    
-    log "INFO" "Backup schedule: $backup_schedule"
-    
-    # Create cron job entry
-    local cron_entry="$backup_schedule /backup/scripts/backup.sh >> /backup/logs/backup.log 2>&1"
+
+    # Get backup schedules from environment variables
+    local base_backup_schedule="${BASE_BACKUP_SCHEDULE:-0 3 * * *}"
+    local incremental_backup_schedule="${INCREMENTAL_BACKUP_SCHEDULE:-0 */6 * * *}"
+
+    log "INFO" "Base backup schedule: $base_backup_schedule"
+    log "INFO" "Incremental backup schedule: $incremental_backup_schedule"
+
+    # Create cron job entries
+    local base_cron_entry="$base_backup_schedule /backup/scripts/backup.sh >> /backup/logs/backup.log 2>&1"
+    local incremental_cron_entry="$incremental_backup_schedule /backup/scripts/incremental-backup.sh >> /backup/logs/backup.log 2>&1"
     
     # Create crontab for postgres user
     log "INFO" "Creating crontab for postgres user..."
@@ -39,8 +42,11 @@ BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-3}
 PGBACKREST_STANZA=${PGBACKREST_STANZA:-main}
 PGBACKREST_CONFIG=/etc/pgbackrest/pgbackrest.conf
 
-# Backup job
-${cron_entry}
+# Base backup job (full backup)
+${base_cron_entry}
+
+# Incremental backup job
+${incremental_cron_entry}
 EOF
     
     # Create crontab directory for postgres user if it doesn't exist
@@ -64,8 +70,12 @@ EOF
 
     # Verify crontab installation
     log "INFO" "Verifying crontab installation..."
-    if [ -f "/var/spool/cron/crontabs/postgres" ] && grep -q "/backup/scripts/backup.sh" "/var/spool/cron/crontabs/postgres"; then
+    if [ -f "/var/spool/cron/crontabs/postgres" ] && \
+       grep -q "/backup/scripts/backup.sh" "/var/spool/cron/crontabs/postgres" && \
+       grep -q "/backup/scripts/incremental-backup.sh" "/var/spool/cron/crontabs/postgres"; then
         log "INFO" "Crontab verification successful"
+        log "INFO" "Installed cron jobs:"
+        cat "/var/spool/cron/crontabs/postgres" | grep -E "(backup\.sh|incremental-backup\.sh)"
     else
         log "ERROR" "Crontab verification failed"
         return 1

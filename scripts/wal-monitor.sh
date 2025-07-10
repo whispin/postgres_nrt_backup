@@ -13,32 +13,7 @@ WAL_GROWTH_THRESHOLD=${WAL_GROWTH_THRESHOLD:-"100MB"}  # Default threshold
 WAL_STATE_FILE="/backup/logs/wal-monitor.state"
 WAL_LOG_FILE="/backup/logs/wal-monitor.log"
 
-# Parse size with unit (KB, MB, GB) to bytes
-parse_size_to_bytes() {
-    local size_str="$1"
-    local number=$(echo "$size_str" | sed 's/[^0-9.]//g')
-    local unit=$(echo "$size_str" | sed 's/[0-9.]//g' | tr '[:lower:]' '[:upper:]')
-    
-    case "$unit" in
-        "KB"|"K")
-            echo $(echo "$number * 1024" | bc)
-            ;;
-        "MB"|"M")
-            echo $(echo "$number * 1024 * 1024" | bc)
-            ;;
-        "GB"|"G")
-            echo $(echo "$number * 1024 * 1024 * 1024" | bc)
-            ;;
-        "")
-            # No unit, assume bytes
-            echo "$number"
-            ;;
-        *)
-            log "ERROR" "Unknown size unit: $unit. Use KB, MB, or GB"
-            return 1
-            ;;
-    esac
-}
+
 
 # Get current WAL directory size
 get_wal_size() {
@@ -56,38 +31,7 @@ get_current_lsn() {
     echo "$lsn"
 }
 
-# Convert LSN to numeric value for comparison
-lsn_to_numeric() {
-    local lsn="$1"
-    if [[ "$lsn" =~ ^([0-9A-F]+)/([0-9A-F]+)$ ]]; then
-        local high="${BASH_REMATCH[1]}"
-        local low="${BASH_REMATCH[2]}"
-        # Convert hex to decimal and combine
-        echo $(( 0x$high * 4294967296 + 0x$low ))
-    else
-        echo "0"
-    fi
-}
 
-# Calculate WAL growth since last check
-calculate_wal_growth() {
-    local current_lsn="$1"
-    local last_lsn="$2"
-    
-    if [ -z "$last_lsn" ] || [ "$last_lsn" = "null" ]; then
-        echo "0"
-        return
-    fi
-    
-    local current_numeric=$(lsn_to_numeric "$current_lsn")
-    local last_numeric=$(lsn_to_numeric "$last_lsn")
-    
-    if [ "$current_numeric" -gt "$last_numeric" ]; then
-        echo $(( current_numeric - last_numeric ))
-    else
-        echo "0"
-    fi
-}
 
 # Load state from file
 load_state() {
@@ -109,6 +53,7 @@ LAST_BACKUP_TIME="$LAST_BACKUP_TIME"
 LAST_BACKUP_LSN="$LAST_BACKUP_LSN"
 LAST_CHECK_LSN="$LAST_CHECK_LSN"
 ACCUMULATED_WAL_GROWTH=$ACCUMULATED_WAL_GROWTH
+BACKUP_TRIGGERED_BY="${BACKUP_TRIGGERED_BY:-wal_monitor}"
 EOF
 }
 
@@ -158,6 +103,7 @@ perform_wal_triggered_backup() {
             LAST_BACKUP_TIME=$(date '+%Y-%m-%d %H:%M:%S')
             LAST_BACKUP_LSN="$current_lsn"
             ACCUMULATED_WAL_GROWTH=0
+            BACKUP_TRIGGERED_BY="wal_monitor_full"
             return 0
         else
             wal_log "ERROR" "Failed to perform prerequisite full backup"
@@ -173,6 +119,7 @@ perform_wal_triggered_backup() {
         LAST_BACKUP_TIME=$(date '+%Y-%m-%d %H:%M:%S')
         LAST_BACKUP_LSN="$current_lsn"
         ACCUMULATED_WAL_GROWTH=0
+        BACKUP_TRIGGERED_BY="wal_monitor_incremental"
 
         # Upload to remote storage if configured
         if [ -n "$REMOTE_NAME" ] && [ -f "$RCLONE_CONFIG_PATH" ]; then

@@ -8,6 +8,8 @@
 
 - 🔄 **自动备份**: 定时完整备份和增量备份
 - 📊 **WAL监控**: 基于WAL增长自动触发增量备份
+- ⏰ **双重触发**: 支持基于时间(cron)和WAL增长的双重增量备份触发
+- 🔍 **智能WAL检测**: 检查WAL变化避免空备份，提高备份效率
 - 🎯 **手动备份**: 支持手动触发各种类型备份
 - 🧠 **智能备份**: 增量备份时自动检查并创建全量备份
 - 🔧 **自动恢复**: 从远程存储自动恢复到指定时间点
@@ -103,11 +105,20 @@ docker-compose -f docker-compose.ghcr.yml up -d
 
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
-| `PGBACKREST_STANZA` | - | pgBackRest 存储库名称 |
-| `BACKUP_RETENTION_DAYS` | 3 | 备份保留天数 |
-| `BASE_BACKUP_SCHEDULE` | "0 3 * * *" | 全量备份计划（cron 格式） |
-| `RCLONE_REMOTE_PATH` | "postgres-backups" | 远程存储路径 |
-| `RECOVERY_MODE` | "false" | 恢复模式开关 |
+| `POSTGRES_USER` | - | PostgreSQL 用户名 |
+| `POSTGRES_PASSWORD` | - | PostgreSQL 密码 |
+| `POSTGRES_DB` | - | PostgreSQL 数据库名 |
+| `PGBACKREST_STANZA` | `main` | pgBackRest 存储库名称 |
+| `BACKUP_RETENTION_DAYS` | `3` | 备份保留天数 |
+| `BASE_BACKUP_SCHEDULE` | `"0 3 * * *"` | 全量备份计划（cron 格式） |
+| `INCREMENTAL_BACKUP_SCHEDULE` | `"0 */6 * * *"` | 增量备份计划（cron 格式） |
+| `RCLONE_CONF_BASE64` | - | Base64编码的rclone配置（可选，如果挂载文件） |
+| `RCLONE_REMOTE_PATH` | `"postgres-backups"` | 远程存储路径 |
+| `RECOVERY_MODE` | `"false"` | 恢复模式开关 |
+| `WAL_GROWTH_THRESHOLD` | `"100MB"` | WAL增长阈值 |
+| `WAL_MONITOR_INTERVAL` | `60` | WAL监控间隔（秒） |
+| `ENABLE_WAL_MONITOR` | `"true"` | 启用WAL监控 |
+| `MIN_WAL_GROWTH_FOR_BACKUP` | `"1MB"` | 定时备份的最小WAL增长阈值 |
 
 ### 卷挂载
 

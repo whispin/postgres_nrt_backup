@@ -8,6 +8,8 @@ A comprehensive PostgreSQL near real-time backup and recovery solution based on 
 
 - 🔄 **Automated Backups**: Scheduled full and incremental backups
 - 📊 **WAL Monitoring**: Automatic incremental backups triggered by WAL growth
+- ⏰ **Dual Backup Triggers**: Both time-based (cron) and WAL-based incremental backups
+- 🔍 **Smart WAL Detection**: Avoids empty backups by checking WAL changes before execution
 - 🎯 **Manual Backups**: Support for manually triggered backup operations
 - 🧠 **Smart Backup Logic**: Automatic full backup creation when incremental backups are requested
 - 🔧 **Automatic Recovery**: Automated recovery from remote storage to specific point-in-time
@@ -111,12 +113,14 @@ docker-compose -f docker-compose.ghcr.yml up -d
 | `PGBACKREST_STANZA` | `main` | pgBackRest stanza name |
 | `BACKUP_RETENTION_DAYS` | `3` | Backup retention period in days |
 | `BASE_BACKUP_SCHEDULE` | `"0 3 * * *"` | Full backup schedule (cron format) |
+| `INCREMENTAL_BACKUP_SCHEDULE` | `"0 */6 * * *"` | Incremental backup schedule (cron format) |
 | `RCLONE_CONF_BASE64` | - | Base64 encoded rclone configuration (optional if file mounted) |
 | `RCLONE_REMOTE_PATH` | `"postgres-backups"` | Remote storage path |
 | `RECOVERY_MODE` | `"false"` | Enable recovery mode |
 | `WAL_GROWTH_THRESHOLD` | `"100MB"` | WAL growth threshold for auto backups |
 | `WAL_MONITOR_INTERVAL` | `60` | WAL monitoring interval in seconds |
 | `ENABLE_WAL_MONITOR` | `"true"` | Enable WAL monitoring |
+| `MIN_WAL_GROWTH_FOR_BACKUP` | `"1MB"` | Minimum WAL growth to trigger scheduled backup |
 
 ### Recovery Environment Variables
 
@@ -282,6 +286,7 @@ The project uses GitHub Actions for automated building and publishing:
 
 - [Quick Start Guide](QUICK_START_EN.md) - Get started in 5 minutes
 - [rclone Configuration Guide](RCLONE_CONFIGURATION_GUIDE.md) - Two methods to configure rclone
+- [Incremental Backup Scheduling](INCREMENTAL_BACKUP_SCHEDULING.md) - Time-based incremental backups
 - [Manual Backup Guide](MANUAL_BACKUP_GUIDE.md)
 - [WAL Monitor Guide](WAL_MONITOR_GUIDE.md)
 - [Recovery Guide](RECOVERY_GUIDE.md)

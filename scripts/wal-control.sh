@@ -138,6 +138,7 @@ show_status() {
     echo "  WAL Growth Threshold: ${WAL_GROWTH_THRESHOLD:-100MB}"
     echo "  Monitor Interval: ${WAL_MONITOR_INTERVAL:-60}s"
     echo "  Enable WAL Monitor: ${ENABLE_WAL_MONITOR:-true}"
+    echo "  Incremental Backup Schedule: ${INCREMENTAL_BACKUP_SCHEDULE:-0 */6 * * *}"
     
     echo ""
     if [ -f "$WAL_STATE_FILE" ]; then
@@ -146,6 +147,7 @@ show_status() {
         echo "  Last Backup Time: ${LAST_BACKUP_TIME:-Never}"
         echo "  Last Backup LSN: ${LAST_BACKUP_LSN:-N/A}"
         echo "  Accumulated WAL Growth: ${ACCUMULATED_WAL_GROWTH:-0} bytes"
+        echo "  Last Backup Triggered By: ${BACKUP_TRIGGERED_BY:-unknown}"
     else
         echo "State: No state file found"
     fi
