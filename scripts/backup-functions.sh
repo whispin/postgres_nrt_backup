@@ -405,6 +405,47 @@ EOF
     archive_cmd_check=$(su-exec postgres psql -d "$pg_database" -t -c "SHOW archive_command;" 2>/dev/null | sed 's/^[ \t]*//;s/[ \t]*$//')
     log "INFO" "Current archive_command: $archive_cmd_check"
     
+    # Test archive-push manually with a dummy WAL file
+    log "INFO" "Testing archive-push functionality..."
+    
+    # Create a dummy WAL file for testing
+    test_wal_file="/tmp/test_wal_segment"
+    echo "dummy wal content for testing" > "$test_wal_file"
+    
+    # Test the archive-push command
+    if su-exec postgres pgbackrest --stanza="${stanza_name}" archive-push "$test_wal_file"; then
+        log "INFO" "Archive-push test successful"
+    else
+        log "ERROR" "Archive-push test failed"
+        # Show more details about the failure
+        log "ERROR" "Testing archive-push with debug output..."
+        su-exec postgres pgbackrest --stanza="${stanza_name}" --log-level-console=debug archive-push "$test_wal_file" || true
+    fi
+    
+    # Clean up test file
+    rm -f "$test_wal_file"
+    
+    # Force a WAL switch to trigger archiving
+    log "INFO" "Forcing WAL switch to trigger archiving..."
+    su-exec postgres psql -d "$pg_database" -c "SELECT pg_switch_wal();" || true
+    
+    # Wait a moment for archiving to complete
+    sleep 5
+    
+    # Check if any WAL files have been archived
+    log "INFO" "Checking for archived WAL files..."
+    if [ -d "/var/lib/pgbackrest/archive/${stanza_name}" ]; then
+        archived_count=$(find "/var/lib/pgbackrest/archive/${stanza_name}" -name "*.gz" -o -name "*.lz4" -o -name "*.xz" -o -name "*.bz2" -o -name "*-*" | wc -l)
+        log "INFO" "Found ${archived_count} archived WAL files"
+        if [ "$archived_count" -gt 0 ]; then
+            log "INFO" "WAL archiving is working correctly"
+        else
+            log "WARN" "No archived WAL files found yet"
+        fi
+    else
+        log "WARN" "WAL archive directory does not exist"
+    fi
+    
     return 0
 }
 
@@ -419,6 +460,44 @@ perform_pgbackrest_backup() {
     if ! wait_for_postgres 30; then
         log "ERROR" "PostgreSQL is not ready for backup"
         return 1
+    fi
+
+    # For full backups, ensure we have some WAL files archived first
+    if [ "$backup_type" = "full" ]; then
+        log "INFO" "Checking for archived WAL files before starting full backup..."
+        
+        # Force a few WAL switches to ensure we have archived WAL files
+        for i in 1 2 3; do
+            log "INFO" "Forcing WAL switch $i/3..."
+            su-exec postgres psql -d "${POSTGRES_DB:-postgres}" -c "SELECT pg_switch_wal();" || true
+            sleep 2
+        done
+        
+        # Wait for archiving to complete
+        sleep 10
+        
+        # Check if we have archived WAL files
+        if [ -d "/var/lib/pgbackrest/archive/${stanza_name}" ]; then
+            archived_count=$(find "/var/lib/pgbackrest/archive/${stanza_name}" -type f | wc -l)
+            log "INFO" "Found ${archived_count} archived WAL files"
+            
+            if [ "$archived_count" -eq 0 ]; then
+                log "WARN" "No archived WAL files found. Backup may fail."
+                log "INFO" "Attempting to run archive-push manually..."
+                
+                # Try to manually archive any pending WAL files
+                wal_dir="${PGDATA:-/var/lib/postgresql/data}/pg_wal"
+                if [ -d "$wal_dir" ]; then
+                    for wal_file in "$wal_dir"/[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F]; do
+                        if [ -f "$wal_file" ]; then
+                            log "INFO" "Trying to archive WAL file: $(basename "$wal_file")"
+                            su-exec postgres pgbackrest --stanza="${stanza_name}" archive-push "$wal_file" || true
+                            break
+                        fi
+                    done
+                fi
+            fi
+        fi
     fi
 
     # Perform the backup using su-exec
