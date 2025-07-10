@@ -290,36 +290,96 @@ compress_and_upload() {
         return 0
     fi
 
-    log "INFO" "Compressing $source_file..."
-    temp_compressed_file=$(mktemp)
+    log "INFO" "Compressing $source_file (size: $(du -h "$source_file" | cut -f1))..."
+    temp_compressed_file=$(mktemp --suffix=.gz)
     
     # Ensure cleanup on exit
     trap "rm -f '$temp_compressed_file'" EXIT
     
-    if ! gzip -c "$source_file" > "$temp_compressed_file"; then
+    # Use gzip with better compression and verification
+    if ! gzip -9 -c "$source_file" > "$temp_compressed_file"; then
         log "ERROR" "Failed to compress $source_file."
         rm -f "$temp_compressed_file"
         return 1
     fi
 
-    log "INFO" "Verifying compressed file..."
-    if ! gzip -t "$temp_compressed_file"; then
-        log "ERROR" "Compressed file is corrupted. Aborting upload."
+    # Verify the compressed file is not empty
+    if [[ ! -s "$temp_compressed_file" ]]; then
+        log "ERROR" "Compressed file is empty."
         rm -f "$temp_compressed_file"
         return 1
     fi
-    log "INFO" "Compressed file verified successfully."
 
-    log "INFO" "Uploading $source_file to ${remote_path}/${remote_filename}"
-    
-    if ! rclone rcat "${REMOTE_NAME}:${remote_path}/${remote_filename}" --config "$RCLONE_CONFIG_PATH" < "$temp_compressed_file"; then
-        log "ERROR" "Failed to upload $source_file."
+    log "INFO" "Verifying compressed file integrity..."
+    if ! gzip -t "$temp_compressed_file" 2>/dev/null; then
+        log "ERROR" "Compressed file integrity check failed."
         rm -f "$temp_compressed_file"
         return 1
+    fi
+    
+    # Log compression ratio
+    local original_size=$(stat -c%s "$source_file")
+    local compressed_size=$(stat -c%s "$temp_compressed_file")
+    local ratio=$(( (original_size - compressed_size) * 100 / original_size ))
+    log "INFO" "Compression successful. Ratio: ${ratio}% ($(du -h "$temp_compressed_file" | cut -f1))"
+
+    log "INFO" "Uploading compressed file to ${remote_path}/${remote_filename}"
+    
+    # Create remote directory first
+    if ! rclone mkdir "${REMOTE_NAME}:${remote_path}/" --config "$RCLONE_CONFIG_PATH"; then
+        log "WARN" "Failed to create remote directory (may already exist)"
+    fi
+    
+    # Upload with retry mechanism and verification
+    local upload_attempts=3
+    local attempt=1
+    
+    while [ $attempt -le $upload_attempts ]; do
+        log "INFO" "Upload attempt $attempt/$upload_attempts"
+        
+        if rclone copy "$temp_compressed_file" "${REMOTE_NAME}:${remote_path}/" \
+            --config "$RCLONE_CONFIG_PATH" \
+            --progress \
+            --checksum \
+            --timeout=300s; then
+            
+            # Verify upload by checking file size
+            local remote_size=$(rclone size "${REMOTE_NAME}:${remote_path}/$(basename "$temp_compressed_file")" --config "$RCLONE_CONFIG_PATH" 2>/dev/null | grep "Total size:" | awk '{print $3}' || echo "0")
+            local local_size=$(stat -c%s "$temp_compressed_file")
+            
+            if [[ "$remote_size" == "$local_size" ]]; then
+                log "INFO" "Upload verified successfully"
+                break
+            else
+                log "WARN" "Upload size mismatch (local: $local_size, remote: $remote_size)"
+                attempt=$((attempt + 1))
+            fi
+        else
+            log "WARN" "Upload attempt $attempt failed"
+            attempt=$((attempt + 1))
+            if [ $attempt -le $upload_attempts ]; then
+                sleep 5
+            fi
+        fi
+    done
+    
+    if [ $attempt -gt $upload_attempts ]; then
+        log "ERROR" "Failed to upload $source_file after $upload_attempts attempts."
+        rm -f "$temp_compressed_file"
+        return 1
+    fi
+    
+    # Rename to final filename if needed
+    if [[ "$(basename "$temp_compressed_file")" != "$remote_filename" ]]; then
+        if ! rclone move "${REMOTE_NAME}:${remote_path}/$(basename "$temp_compressed_file")" "${REMOTE_NAME}:${remote_path}/${remote_filename}" --config "$RCLONE_CONFIG_PATH"; then
+            log "ERROR" "Failed to rename uploaded file to $remote_filename"
+            rm -f "$temp_compressed_file"
+            return 1
+        fi
     fi
     
     rm -f "$temp_compressed_file"
-    log "INFO" "Successfully uploaded $remote_filename."
+    log "INFO" "Successfully uploaded and verified $remote_filename"
     
     # Clear the trap since we've cleaned up manually
     trap - EXIT
@@ -711,26 +771,62 @@ create_compressed_repository_archive() {
 
     log "INFO" "Creating compressed repository archive: $archive_name"
 
-    # Check if repository directory exists
+    # Check if repository directory exists and has content
     if [[ ! -d "$repo_path" ]]; then
         log "ERROR" "pgBackRest repository directory does not exist: $repo_path"
         return 1
     fi
 
-    # Create compressed archive of the entire repository
-    if ! tar -czf "$archive_path" -C "$(dirname "$repo_path")" "$(basename "$repo_path")"; then
-        log "ERROR" "Failed to create compressed repository archive"
-        return 1
+    # Check if repository has content
+    if [[ ! "$(ls -A "$repo_path" 2>/dev/null)" ]]; then
+        log "WARN" "pgBackRest repository directory is empty: $repo_path"
+        # Create a minimal archive to avoid issues
+        mkdir -p "${repo_path}/empty"
+        echo "Repository was empty during backup" > "${repo_path}/empty/README.txt"
     fi
 
-    # Verify archive integrity
-    if ! tar -tzf "$archive_path" > /dev/null; then
-        log "ERROR" "Compressed repository archive verification failed"
+    # Create compressed archive with better compression and error handling
+    log "INFO" "Creating tar.gz archive from $repo_path"
+    if ! tar --create \
+             --gzip \
+             --file="$archive_path" \
+             --directory="$(dirname "$repo_path")" \
+             --verbose \
+             --exclude="*.lock" \
+             --exclude="*.tmp" \
+             "$(basename "$repo_path")"; then
+        log "ERROR" "Failed to create compressed repository archive"
         rm -f "$archive_path"
         return 1
     fi
 
-    log "INFO" "Compressed repository archive created and verified: $archive_path"
+    # Verify archive integrity with multiple checks
+    log "INFO" "Verifying archive integrity..."
+    
+    # Check if file exists and has size
+    if [[ ! -s "$archive_path" ]]; then
+        log "ERROR" "Archive file is empty or does not exist"
+        rm -f "$archive_path"
+        return 1
+    fi
+    
+    # Test gzip integrity
+    if ! gzip -t "$archive_path" 2>/dev/null; then
+        log "ERROR" "Archive gzip integrity check failed"
+        rm -f "$archive_path"
+        return 1
+    fi
+    
+    # Test tar listing
+    if ! tar -tzf "$archive_path" >/dev/null 2>&1; then
+        log "ERROR" "Archive tar listing check failed"
+        rm -f "$archive_path"
+        return 1
+    fi
+
+    # Get file size for logging
+    local file_size=$(du -h "$archive_path" | cut -f1)
+    log "INFO" "Compressed repository archive created successfully: $archive_path (size: $file_size)"
     echo "$archive_path"
     return 0
 }

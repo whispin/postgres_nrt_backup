@@ -117,16 +117,67 @@ download_and_extract_repository_archive() {
     
     local temp_archive="/tmp/${archive_name}"
     
-    # Download the archive
-    if ! rclone copy "${REMOTE_NAME}:${remote_repo_path}/${archive_name}" "/tmp/" --config "$RCLONE_CONFIG_PATH"; then
+    # Download the archive with verification
+    recovery_log "INFO" "Downloading archive..."
+    if ! rclone copy "${REMOTE_NAME}:${remote_repo_path}/${archive_name}" "/tmp/" \
+        --config "$RCLONE_CONFIG_PATH" \
+        --progress \
+        --checksum; then
         recovery_log "ERROR" "Failed to download repository archive: $archive_name"
         return 1
     fi
     
-    # Extract the archive
+    # Verify downloaded file exists and has content
+    if [[ ! -s "$temp_archive" ]]; then
+        recovery_log "ERROR" "Downloaded archive is empty or missing: $temp_archive"
+        rm -f "$temp_archive"
+        return 1
+    fi
+    
+    # Get file size for logging
+    local file_size=$(du -h "$temp_archive" | cut -f1)
+    recovery_log "INFO" "Downloaded archive size: $file_size"
+    
+    # Verify archive integrity before extraction
+    recovery_log "INFO" "Verifying archive integrity..."
+    if ! gzip -t "$temp_archive" 2>/dev/null; then
+        recovery_log "ERROR" "Archive gzip integrity check failed"
+        rm -f "$temp_archive"
+        return 1
+    fi
+    
+    if ! tar -tzf "$temp_archive" >/dev/null 2>&1; then
+        recovery_log "ERROR" "Archive tar integrity check failed"
+        rm -f "$temp_archive"
+        return 1
+    fi
+    
+    recovery_log "INFO" "Archive integrity verified successfully"
+    
+    # Remove existing repository if it exists
+    if [[ -d "$local_repo_path" ]]; then
+        recovery_log "INFO" "Removing existing repository directory"
+        rm -rf "$local_repo_path"
+    fi
+    
+    # Create parent directory
+    mkdir -p "$(dirname "$local_repo_path")"
+    
+    # Extract the archive with verbose output
     recovery_log "INFO" "Extracting repository archive..."
-    if ! tar -xzf "$temp_archive" -C "$(dirname "$local_repo_path")"; then
+    if ! tar --extract \
+             --gzip \
+             --file="$temp_archive" \
+             --directory="$(dirname "$local_repo_path")" \
+             --verbose; then
         recovery_log "ERROR" "Failed to extract repository archive"
+        rm -f "$temp_archive"
+        return 1
+    fi
+    
+    # Verify extraction was successful
+    if [[ ! -d "$local_repo_path" ]]; then
+        recovery_log "ERROR" "Repository directory not found after extraction: $local_repo_path"
         rm -f "$temp_archive"
         return 1
     fi
@@ -134,7 +185,10 @@ download_and_extract_repository_archive() {
     # Clean up temporary archive
     rm -f "$temp_archive"
     
-    recovery_log "INFO" "Repository archive extracted successfully"
+    # Log extraction results
+    local extracted_size=$(du -sh "$local_repo_path" | cut -f1)
+    recovery_log "INFO" "Repository archive extracted successfully (size: $extracted_size)"
+    
     return 0
 }
 
