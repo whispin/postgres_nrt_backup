@@ -1,19 +1,16 @@
-# 构建阶段：用于编译pgbackrest
-FROM postgres:17.5-alpine
+# 可配置的基础PostgreSQL镜像
+ARG POSTGRES_IMAGE=postgres:17.5-alpine
+ARG PGBACKREST_VERSION=2.55.1
 
-# 安装编译依赖
-RUN apk add --no-cache \
+# ===== 构建阶段：用于编译pgbackrest =====
+FROM ${POSTGRES_IMAGE} AS builder
+
+ARG PGBACKREST_VERSION
+
+# 安装编译依赖（仅在构建阶段）
+RUN apk add --no-cache --virtual .build-deps \
     curl \
-    bash \
-    gzip \
-    tar \
     unzip \
-    coreutils \
-    findutils \
-    dcron \
-    su-exec \
-    bc \
-    jq \
     build-base \
     gcc \
     make \
@@ -29,39 +26,96 @@ RUN apk add --no-cache \
     zlib-dev \
     yaml-dev \
     meson \
-    ninja \
-    && rm -rf /var/cache/apk/*
+    ninja
 
-# 安装pgBackRest从源码
-ENV PGBACKREST_VERSION=2.55.1
-RUN curl -L -o ${PGBACKREST_VERSION}.tar.gz https://github.com/pgbackrest/pgbackrest/archive/release/${PGBACKREST_VERSION}.tar.gz \
- && tar -xzf ${PGBACKREST_VERSION}.tar.gz \
- && rm -f ${PGBACKREST_VERSION}.tar.gz \
- && mkdir /tmp/pgbackrest-build \
- && meson setup pgbackrest-release-${PGBACKREST_VERSION} /tmp/pgbackrest-build \
- && ninja -C /tmp/pgbackrest-build \
- && ninja -C /tmp/pgbackrest-build install \
- && strip /usr/local/bin/pgbackrest
+# 编译pgBackRest
+RUN curl -L -o ${PGBACKREST_VERSION}.tar.gz \
+        https://github.com/pgbackrest/pgbackrest/archive/release/${PGBACKREST_VERSION}.tar.gz \
+    && tar -xzf ${PGBACKREST_VERSION}.tar.gz \
+    && rm -f ${PGBACKREST_VERSION}.tar.gz \
+    && mkdir /tmp/pgbackrest-build \
+    && meson setup pgbackrest-release-${PGBACKREST_VERSION} /tmp/pgbackrest-build \
+    && ninja -C /tmp/pgbackrest-build \
+    && ninja -C /tmp/pgbackrest-build install \
+    && strip /usr/local/bin/pgbackrest
 
-
-# 安装rclone
+# 下载rclone（在构建阶段）
 RUN curl -O https://downloads.rclone.org/rclone-current-linux-amd64.zip \
     && unzip rclone-current-linux-amd64.zip \
     && cd rclone-*-linux-amd64 \
-    && cp rclone /usr/bin/ \
-    && chmod +x /usr/bin/rclone \
+    && cp rclone /usr/local/bin/ \
+    && chmod +x /usr/local/bin/rclone \
     && cd .. \
     && rm -rf rclone-* rclone-current-linux-amd64.zip
 
+# ===== 运行阶段：最终镜像 =====
+FROM ${POSTGRES_IMAGE}
+
+# 标签信息
+LABEL maintainer="PostgreSQL NRT Backup Team"
+LABEL description="PostgreSQL with pgBackRest and rclone for near real-time backup"
+LABEL version="1.0"
+
+# 安装运行时必需的包（包括开发库以支持动态链接的二进制文件）
+RUN apk add --no-cache \
+    bash \
+    gzip \
+    tar \
+    coreutils \
+    findutils \
+    dcron \
+    su-exec \
+    bc \
+    jq \
+    openssl \
+    openssl-dev \
+    lz4 \
+    lz4-dev \
+    zstd \
+    zstd-dev \
+    bzip2 \
+    bzip2-dev \
+    libxml2 \
+    libxml2-dev \
+    zlib \
+    zlib-dev \
+    yaml \
+    yaml-dev \
+    && rm -rf /var/cache/apk/*
+
+# 从构建阶段复制编译好的pgBackRest
+COPY --from=builder /usr/local/bin/pgbackrest /usr/local/bin/pgbackrest
+
+# 从构建阶段复制rclone
+COPY --from=builder /usr/local/bin/rclone /usr/bin/rclone
+
+# 复制备份脚本（在创建目录之前）
+COPY scripts/ /backup/scripts/
+
 # 创建必要的目录和配置
 RUN mkdir -p /etc/pgbackrest /var/log/pgbackrest /var/lib/pgbackrest \
-    /backup/scripts /backup/logs /backup/local/base /backup/local/wal \
+    /backup/logs /backup/local/base /backup/local/wal \
     /var/lib/postgresql/data ~/.config/rclone \
     /var/spool/cron/crontabs \
     && chmod 750 /etc/pgbackrest /var/log/pgbackrest /var/lib/pgbackrest \
     && chmod 755 /var/spool/cron/crontabs \
-    && chown -R postgres:postgres /backup /var/log/pgbackrest /var/lib/pgbackrest /etc/pgbackrest \
-    && pgbackrest version
+    && chown -R postgres:postgres /backup /var/log/pgbackrest /var/lib/pgbackrest /etc/pgbackrest
+
+# 设置脚本权限
+RUN chmod +x /backup/scripts/*.sh && \
+    chown -R postgres:postgres /backup/scripts
+
+# 保存原始的PostgreSQL入口点脚本（如果存在）
+RUN if [ -f /usr/local/bin/docker-entrypoint.sh ]; then \
+        cp /usr/local/bin/docker-entrypoint.sh /usr/local/bin/postgres-docker-entrypoint.sh; \
+    fi
+
+# 复制自定义入口点脚本并设置权限
+RUN cp /backup/scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh && \
+    chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# 验证pgBackRest安装
+RUN pgbackrest version
 
 # 复制pgbackrest基础配置文件
 COPY pgbackrest.conf /etc/pgbackrest/pgbackrest.conf
@@ -69,13 +123,6 @@ RUN chmod 640 /etc/pgbackrest/pgbackrest.conf && chown postgres:postgres /etc/pg
 
 # 设置默认配置路径
 ENV PGBACKREST_CONFIG=/etc/pgbackrest/pgbackrest.conf
-
-# 复制备份脚本
-COPY scripts/ /backup/scripts/
-
-# 设置脚本权限
-RUN chmod +x /backup/scripts/*.sh && \
-    chown -R postgres:postgres /backup/scripts
 
 # 设置默认环境变量
 ENV BACKUP_RETENTION_DAYS=3
@@ -100,13 +147,6 @@ ENV RECOVERY_TARGET_ACTION="promote"
 
 # 暴露PostgreSQL端口
 EXPOSE 5432
-
-# 保存原始的PostgreSQL入口点脚本
-RUN cp /usr/local/bin/docker-entrypoint.sh /usr/local/bin/postgres-docker-entrypoint.sh
-
-# 复制自定义入口点脚本
-COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # 添加健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
