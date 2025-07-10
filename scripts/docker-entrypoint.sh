@@ -166,22 +166,51 @@ setup_backup_system() {
 main() {
     log "INFO" "=== Docker Container Starting ==="
 
-    # Initialize backup system
-    if ! initialize_backup_system; then
-        log "ERROR" "Backup system initialization failed"
-        exit 1
-    fi
+    # Check if recovery mode is enabled
+    if [ "${RECOVERY_MODE:-false}" = "true" ]; then
+        log "INFO" "=== Recovery Mode Enabled ==="
 
-    # Start PostgreSQL
-    if ! start_postgresql; then
-        log "ERROR" "PostgreSQL startup failed"
-        exit 1
-    fi
+        # Initialize backup system (needed for rclone setup)
+        if ! initialize_backup_system; then
+            log "ERROR" "Backup system initialization failed"
+            exit 1
+        fi
 
-    # Setup backup system
-    if ! setup_backup_system; then
-        log "ERROR" "Backup system setup failed"
-        exit 1
+        # Perform recovery
+        if ! /backup/scripts/recovery.sh; then
+            log "ERROR" "Recovery process failed"
+            exit 1
+        fi
+
+        log "INFO" "=== Recovery completed successfully ==="
+        log "INFO" "PostgreSQL is now running in normal mode"
+
+        # Setup backup system after recovery
+        if ! setup_backup_system; then
+            log "ERROR" "Backup system setup failed after recovery"
+            exit 1
+        fi
+
+    else
+        log "INFO" "=== Normal Mode ==="
+
+        # Initialize backup system
+        if ! initialize_backup_system; then
+            log "ERROR" "Backup system initialization failed"
+            exit 1
+        fi
+
+        # Start PostgreSQL
+        if ! start_postgresql; then
+            log "ERROR" "PostgreSQL startup failed"
+            exit 1
+        fi
+
+        # Setup backup system
+        if ! setup_backup_system; then
+            log "ERROR" "Backup system setup failed"
+            exit 1
+        fi
     fi
 
     log "INFO" "=== All services started successfully ==="
