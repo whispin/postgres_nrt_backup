@@ -69,7 +69,8 @@ start_postgresql() {
         # Enable WAL archiving for pgBackRest (CRITICAL for backup functionality)
         echo "wal_level = replica" >> "$PGDATA/postgresql.conf"
         echo "archive_mode = on" >> "$PGDATA/postgresql.conf"
-        echo "archive_command = 'pgbackrest --stanza=${PGBACKREST_STANZA:-main} archive-push %p'" >> "$PGDATA/postgresql.conf"
+        # Initially disable archive_command until stanza is created
+        echo "archive_command = '/bin/true'" >> "$PGDATA/postgresql.conf"
         echo "max_wal_senders = 3" >> "$PGDATA/postgresql.conf"
         echo "wal_keep_size = 1GB" >> "$PGDATA/postgresql.conf"
 
@@ -163,7 +164,7 @@ EOSQL
             echo "wal_level = replica" >> "$PGDATA/postgresql.conf"
         fi
         if ! grep -q "archive_command" "$PGDATA/postgresql.conf"; then
-            echo "archive_command = 'pgbackrest --stanza=${PGBACKREST_STANZA:-main} archive-push %p'" >> "$PGDATA/postgresql.conf"
+            echo "archive_command = '/bin/true'" >> "$PGDATA/postgresql.conf"
         fi
         
         # Start PostgreSQL again

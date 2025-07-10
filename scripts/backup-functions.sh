@@ -388,6 +388,23 @@ EOF
     fi
 
     log "INFO" "Pgbackrest stanza created successfully"
+    
+    # Now update the archive_command to use pgbackrest
+    log "INFO" "Updating archive_command in postgresql.conf..."
+    local pgdata="${PGDATA:-/var/lib/postgresql/data}"
+    
+    # Update the archive_command to use pgbackrest
+    sed -i "s|archive_command = '/bin/true'|archive_command = 'pgbackrest --stanza=${stanza_name} archive-push %p'|g" "$pgdata/postgresql.conf"
+    
+    # Reload PostgreSQL configuration
+    log "INFO" "Reloading PostgreSQL configuration..."
+    su-exec postgres pg_ctl reload -D "$pgdata"
+    
+    # Verify the archive_command was updated
+    log "INFO" "Verifying archive_command configuration..."
+    archive_cmd_check=$(su-exec postgres psql -d "$pg_database" -t -c "SHOW archive_command;" 2>/dev/null | sed 's/^[ \t]*//;s/[ \t]*$//')
+    log "INFO" "Current archive_command: $archive_cmd_check"
+    
     return 0
 }
 
