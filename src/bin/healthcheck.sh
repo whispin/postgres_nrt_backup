@@ -5,6 +5,7 @@
 # Source required modules
 source /backup/src/lib/logging.sh
 source /backup/src/lib/error-handling.sh
+source /backup/src/lib/environment.sh
 
 # Check PostgreSQL health
 check_postgresql() {

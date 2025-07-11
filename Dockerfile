@@ -90,7 +90,7 @@ COPY --from=builder /usr/local/bin/pgbackrest /usr/local/bin/pgbackrest
 COPY --from=builder /usr/local/bin/rclone /usr/bin/rclone
 
 # 复制备份脚本（在创建目录之前）
-COPY scripts/ /backup/scripts/
+COPY src/ /backup/src/
 
 # 创建必要的目录和配置
 RUN mkdir -p /etc/pgbackrest /var/log/pgbackrest /var/lib/pgbackrest \
@@ -102,8 +102,9 @@ RUN mkdir -p /etc/pgbackrest /var/log/pgbackrest /var/lib/pgbackrest \
     && chown -R postgres:postgres /backup /var/log/pgbackrest /var/lib/pgbackrest /etc/pgbackrest
 
 # 设置脚本权限
-RUN chmod +x /backup/scripts/*.sh && \
-    chown -R postgres:postgres /backup/scripts
+RUN chmod +x /backup/src/bin/*.sh && \
+    chmod +x /backup/src/core/*.sh && \
+    chown -R postgres:postgres /backup
 
 # 保存原始的PostgreSQL入口点脚本（如果存在）
 RUN if [ -f /usr/local/bin/docker-entrypoint.sh ]; then \
@@ -111,14 +112,14 @@ RUN if [ -f /usr/local/bin/docker-entrypoint.sh ]; then \
     fi
 
 # 复制自定义入口点脚本并设置权限
-RUN cp /backup/scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh && \
+RUN cp /backup/src/bin/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh && \
     chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # 验证pgBackRest安装
 RUN pgbackrest version
 
 # 复制pgbackrest基础配置文件
-COPY pgbackrest.conf /etc/pgbackrest/pgbackrest.conf
+COPY config/pgbackrest.conf /etc/pgbackrest/pgbackrest.conf
 RUN chmod 640 /etc/pgbackrest/pgbackrest.conf && chown postgres:postgres /etc/pgbackrest/pgbackrest.conf
 
 # 设置默认配置路径
@@ -150,7 +151,7 @@ EXPOSE 5432
 
 # 添加健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD /backup/scripts/healthcheck.sh
+    CMD /backup/src/bin/healthcheck.sh
 
 # 设置启动命令
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
