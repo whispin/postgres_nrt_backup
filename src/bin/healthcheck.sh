@@ -2,7 +2,9 @@
 
 # Health check script for PostgreSQL backup container
 
-source /backup/scripts/backup-functions.sh
+# Source required modules
+source /backup/src/lib/logging.sh
+source /backup/src/lib/error-handling.sh
 
 # Check PostgreSQL health
 check_postgresql() {

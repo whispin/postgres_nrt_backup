@@ -2,7 +2,11 @@
 
 # Setup cron jobs for PostgreSQL backup system
 
-source /backup/scripts/backup-functions.sh
+# Source required modules
+source /backup/src/lib/logging.sh
+source /backup/src/lib/error-handling.sh
+source /backup/src/lib/config.sh
+source /backup/src/lib/environment.sh
 
 setup_cron() {
     log "INFO" "Setting up cron jobs for backup system..."
@@ -15,8 +19,8 @@ setup_cron() {
     log "INFO" "Incremental backup schedule: $incremental_backup_schedule"
 
     # Create cron job entries
-    local base_cron_entry="$base_backup_schedule /backup/scripts/backup.sh >> /backup/logs/backup.log 2>&1"
-    local incremental_cron_entry="$incremental_backup_schedule /backup/scripts/incremental-backup.sh >> /backup/logs/backup.log 2>&1"
+    local base_cron_entry="$base_backup_schedule /backup/src/bin/backup.sh >> /backup/logs/backup.log 2>&1"
+    local incremental_cron_entry="$incremental_backup_schedule /backup/src/bin/incremental-backup.sh >> /backup/logs/backup.log 2>&1"
     
     # Create crontab for postgres user
     log "INFO" "Creating crontab for postgres user..."
@@ -71,8 +75,8 @@ EOF
     # Verify crontab installation
     log "INFO" "Verifying crontab installation..."
     if [ -f "/var/spool/cron/crontabs/postgres" ] && \
-       grep -q "/backup/scripts/backup.sh" "/var/spool/cron/crontabs/postgres" && \
-       grep -q "/backup/scripts/incremental-backup.sh" "/var/spool/cron/crontabs/postgres"; then
+       grep -q "/backup/src/bin/backup.sh" "/var/spool/cron/crontabs/postgres" && \
+       grep -q "/backup/src/bin/incremental-backup.sh" "/var/spool/cron/crontabs/postgres"; then
         log "INFO" "Crontab verification successful"
         log "INFO" "Installed cron jobs:"
         cat "/var/spool/cron/crontabs/postgres" | grep -E "(backup\.sh|incremental-backup\.sh)"

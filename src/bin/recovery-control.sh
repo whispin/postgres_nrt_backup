@@ -5,7 +5,13 @@
 
 set -e
 
-source /backup/scripts/backup-functions.sh
+# Source required modules
+source /backup/src/lib/logging.sh
+source /backup/src/lib/error-handling.sh
+source /backup/src/lib/config.sh
+source /backup/src/lib/environment.sh
+source /backup/src/core/rclone.sh
+source /backup/src/core/recovery.sh
 
 RECOVERY_LOG_FILE="/backup/logs/recovery.log"
 

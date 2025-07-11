@@ -5,7 +5,14 @@
 
 set -e
 
-source /backup/scripts/backup-functions.sh
+# Source all required modules
+source /backup/src/lib/logging.sh
+source /backup/src/lib/error-handling.sh
+source /backup/src/lib/config.sh
+source /backup/src/lib/environment.sh
+source /backup/src/core/rclone.sh
+source /backup/src/core/pgbackrest.sh
+source /backup/src/core/backup.sh
 
 # Recovery configuration
 RECOVERY_TARGET_TIME="${RECOVERY_TARGET_TIME:-}"
@@ -22,9 +29,10 @@ recovery_log() {
     local level="$1"
     local message="$2"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "[$timestamp] [$level] $message" | tee -a "$RECOVERY_LOG_FILE"
-    # Also log to main backup log
-    log "$level" "RECOVERY: $message"
+    # Write to recovery log file and stderr (not stdout to avoid command pollution)
+    echo "[$timestamp] [$level] $message" | tee -a "$RECOVERY_LOG_FILE" >&2
+    # Also log to main backup log (without RECOVERY prefix to avoid duplication)
+    log "$level" "$message"
 }
 
 # Display recovery usage
@@ -386,7 +394,7 @@ perform_restore() {
     local backup_label="$1"
     
     # Build restore command
-    local restore_cmd="pgbackrest --stanza=$stanza_name restore"
+    local restore_cmd="pgbackrest --stanza=$stanza_name restore --pg1-path=$PGDATA"
     
     if [ "$backup_label" != "latest" ]; then
         restore_cmd="$restore_cmd --set=$backup_label"

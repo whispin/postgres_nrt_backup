@@ -1,7 +1,14 @@
 #!/bin/bash
 set -e
 
-source /backup/scripts/backup-functions.sh
+# Source all required modules
+source /backup/src/lib/logging.sh
+source /backup/src/lib/error-handling.sh
+source /backup/src/lib/config.sh
+source /backup/src/lib/environment.sh
+source /backup/src/core/rclone.sh
+source /backup/src/core/pgbackrest.sh
+source /backup/src/core/backup.sh
 
 # Initialize backup system
 initialize_backup_system() {
@@ -199,7 +206,7 @@ setup_backup_system() {
     fi
 
     # Setup cron jobs
-    if ! /backup/scripts/setup-cron.sh; then
+    if ! /backup/src/bin/setup-cron.sh; then
         log "ERROR" "Failed to setup cron jobs"
         return 1
     fi
@@ -211,7 +218,7 @@ setup_backup_system() {
         log "INFO" "WAL monitor interval: ${WAL_MONITOR_INTERVAL:-60}s"
 
         # Start WAL monitor in background
-        /backup/scripts/wal-monitor.sh &
+        /backup/src/bin/wal-monitor.sh &
         WAL_MONITOR_PID=$!
         log "INFO" "WAL monitor started with PID: $WAL_MONITOR_PID"
     else
@@ -237,7 +244,7 @@ main() {
         fi
 
         # Perform recovery
-        if ! /backup/scripts/recovery.sh; then
+        if ! /backup/src/core/recovery.sh; then
             log "ERROR" "Recovery process failed"
             exit 1
         fi

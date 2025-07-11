@@ -5,7 +5,14 @@
 
 set -e
 
-source /backup/scripts/backup-functions.sh
+# Source all required modules
+source /backup/src/lib/logging.sh
+source /backup/src/lib/error-handling.sh
+source /backup/src/lib/config.sh
+source /backup/src/lib/environment.sh
+source /backup/src/core/rclone.sh
+source /backup/src/core/pgbackrest.sh
+source /backup/src/core/backup.sh
 
 # Display usage information
 show_usage() {

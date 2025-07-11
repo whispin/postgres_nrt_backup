@@ -5,7 +5,11 @@
 
 set -e
 
-source /backup/scripts/backup-functions.sh
+# Source required modules
+source /backup/src/lib/logging.sh
+source /backup/src/lib/error-handling.sh
+source /backup/src/lib/config.sh
+source /backup/src/lib/environment.sh
 
 WAL_STATE_FILE="/backup/logs/wal-monitor.state"
 WAL_LOG_FILE="/backup/logs/wal-monitor.log"
